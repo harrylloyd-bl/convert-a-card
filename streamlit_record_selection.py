@@ -10,43 +10,81 @@ from PIL import Image
 import pandas as pd
 import streamlit as st
 import requests
+import s3fs
 
-cards_df = pickle.load(open("notebooks/cards_df.p", "rb"))
 
+st.markdown("# Worldcat results for searches for catalogue card title/author")
+
+s3 = s3fs.S3FileSystem(anon=False)
+
+
+@st.cache_data
+def load_s3(s3_path):
+    with s3.open(s3_path, 'rb') as f:
+        df = pickle.load(f)
+        # st.write("Cards data loaded from S3")
+    return df
+
+
+cards_df = load_s3('cac-bucket/cards_df.p')
+# cards_df = pickle.load(open("notebooks/cards_df.p", "rb"))
 nulls = len(cards_df) - len(cards_df.dropna(subset="worldcat_matches"))
 errors = len(cards_df.query("worldcat_matches == 'Error'"))
 cards_to_show = cards_df.query("worldcat_matches != 'Error'").dropna(subset="worldcat_matches")
+cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
 
-st.markdown("# Worldcat results for searches for catalogue card title/author")
-st.write(f"\nTotal of {len(cards_df)} cards")
-st.write(f"Showing {len(cards_to_show)} cards with Worldcat results, "
+st.write(f"Showing {len(cards_to_show)} cards with Worldcat results out of of {len(cards_df)} total cards, "
          f"omitting {nulls} without results and {errors} with errors in result retrieval")
-subset = ("title", "author", "selected_match", "match_needs_editing", "shelfmark", "worldcat_matches", "lines")
-to_show_df_display = st.empty()
-to_show_df_display.dataframe(cards_to_show.loc[:, subset])
-cards_to_show["author"][cards_to_show["author"].isna()] = ""  # handle None values
-option = st.selectbox(
-    "Which result set do you want to choose between?",
-    pd.Series(cards_to_show.index, index=cards_to_show.index, dtype=str)
-    + " ti: " + cards_to_show["title"] + " au: " + cards_to_show["author"]
+subset = ("card_id", "title", "author", "selected_match", "match_needs_editing", "shelfmark", "worldcat_matches", "lines")
+
+select_c1, select_c2 = st.columns([0.4, 0.6])
+selected_card = select_c1.number_input(
+    "Select a card to match",
+    min_value=1, max_value=len(cards_to_show),
+    help="Type or use +/-"
 )
-st.write("Current selection: ", option)
-card_idx = int(option.split(" ")[0])
+
+to_show_df_display = st.empty()
+to_show_df_display.dataframe(cards_to_show.loc[:, subset], hide_index=True)#.set_index("card_id", drop=True))
+cards_to_show["author"][cards_to_show["author"].isna()] = ""  # handle None values
+
+# option_dropdown = st.selectbox(
+#     "Which result set do you want to choose between?",
+#     pd.Series(cards_to_show.index, index=cards_to_show.index, dtype=str)
+#     + " ti: " + cards_to_show["title"] + " au: " + cards_to_show["author"]
+# )
+# card_idx = int(option.split(" ")[0])
+readable_idx = int(selected_card)
+card_idx = cards_to_show.query("card_id == @readable_idx").index.values[0]
+# card_idx = int(option)
 
 if cards_to_show.loc[card_idx, "selected_match"]:
-    st.markdown(":green[**This record has already been matched!**]")
+    select_c2.markdown(":green[**This record has already been matched!**]")
+
+st.write("\n")
+st.markdown("#### Select from Worldcat results")
+
 
 # p5_root = (
 #     "G:/DigiSchol/Digital Research and Curator Team/Projects & Proposals/00_Current Projects"
 #     "/LibCrowds Convert-a-Card (Adi)/OCR/20230504 TKB Export P5 175 GT pp/1016992/P5_for_Transkribus"
 # )
 
-card_idx = int(option.split(" ")[0])
 card_jpg_path = os.path.join("data/images", cards_to_show.loc[card_idx, "xml"][:-4] + ".jpg")
 
-st.image(Image.open(card_jpg_path))
 
-st.markdown("## Select from Worldcat results")
+ic_left, ic_centred, ic_right = st.columns([0.2,0.6,0.2])
+ic_centred.image(Image.open(card_jpg_path), use_column_width=True)
+label_text = """
+**Right**:  
+Catalogue card\n
+**Below**:  
+OCLC MARC match table\n
+Filters and sort options are below the table
+"""
+ic_left.write(label_text)
+
+marc_table = st.empty()
 search_ti = cards_to_show.loc[card_idx, 'title'].replace(' ', '+')
 search_au = cards_to_show.loc[card_idx, 'author'].replace(' ', '+')
 search_term = f"https://www.worldcat.org/search?q=ti%3A{search_ti}+AND+au%3A{search_au}"
@@ -179,7 +217,7 @@ records_to_ignore = st.multiselect(
 )
 
 records_to_display = [x for x in match_ids if x not in records_to_ignore]
-st.dataframe(st_display_df.loc[:, records_to_display[:max_to_display]])
+marc_table.dataframe(st_display_df.loc[:, records_to_display[:max_to_display]])
 
 # cols = st.columns(max_to_display)
 #
@@ -218,26 +256,36 @@ def assign_dict(row, idx, matching_record):
 if save_res:
     # Arrow doesn't like the PyMARC Record type, so need to keep it in a dict
     # but can't assign dict to df loc so assign_dict is a workaround
-    assign_selection = cards_df.apply(assign_dict, idx=card_idx, matching_record=best_res, axis=1)
-    cards_df["selected_match"] = assign_selection
-    cards_df.loc[card_idx, "match_needs_editing"] = needs_editing
-    pickle.dump(cards_df, open("notebooks/cards_df.p", "wb"))
+    if best_res == "None of the results are correct":
+        cards_df.loc[card_idx, "selected_match"] = "No matches"
+    else:
+        assign_selection = cards_df.apply(assign_dict, idx=card_idx, matching_record=best_res, axis=1)
+        cards_df["selected_match"] = assign_selection
+        cards_df.loc[card_idx, "match_needs_editing"] = needs_editing
+
+    with s3.open('cac-bucket/cards_df.p', 'wb') as f:
+        pickle.dump(cards_df, f)
+    st.cache_data.clear()
 
     nulls = len(cards_df) - len(cards_df.dropna(subset="worldcat_matches"))
     errors = len(cards_df.query("worldcat_matches == 'Error'"))
     cards_to_show = cards_df.query("worldcat_matches != 'Error'").dropna(subset="worldcat_matches")
-    to_show_df_display.dataframe(cards_to_show.loc[:, subset])  # subset defined line 24
+    cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
+    to_show_df_display.dataframe(cards_to_show.loc[:, subset], hide_index=True)  # subset defined line 34
 
     st.markdown("### Selection saved!")
 
 if clear_res:
     cards_df.loc[card_idx, "selected_match"] = None
     cards_df.loc[card_idx, "match_needs_editing"] = None
-    pickle.dump(cards_df, open("notebooks/cards_df.p", "wb"))
+    with s3.open('cac-bucket/cards_df.p', 'wb') as f:
+        pickle.dump(cards_df, f)
+    st.cache_data.clear()
 
     nulls = len(cards_df) - len(cards_df.dropna(subset="worldcat_matches"))
     errors = len(cards_df.query("worldcat_matches == 'Error'"))
     cards_to_show = cards_df.query("worldcat_matches != 'Error'").dropna(subset="worldcat_matches")
-    to_show_df_display.dataframe(cards_to_show.loc[:, subset])  # subset defined line 24
+    cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
+    to_show_df_display.dataframe(cards_to_show.loc[:, subset], hide_index=True)  # subset defined line 34
 
     st.markdown("### Selection cleared!")
