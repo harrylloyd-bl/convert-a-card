@@ -124,14 +124,3 @@ if LOAD_XMLS:
 if LOAD_PICKLE:
     cards_df = pickle.load(open("notebooks\\cards_df.p", "rb"))
     # cards_df["xml"] = cards_df["xml"].str.decode("utf-8")
-
-
-# res_dict, res = oclc.OCLC_query("FENG JIAN ZHU YI DE SHENG CHAN FANG SHI", "ZHANG (Yu)")
-# 34 records in blocks of 17
-seventeen_result = oclc.OCLC_query(title="FAN SHEN JI SHI", author="LIANG (Bin)")
-# 24 records in blocks of 8
-eight_result = oclc.OCLC_query(title="FENG CUN XIAO SHUO XUAN", author="FENG (Cun)")
-# 60 records in blocks of 20
-twenty_result = oclc.OCLC_query(title="Feng huang", author="SHEN (Congwen)")
-# print(result[0])
-print("hello")
