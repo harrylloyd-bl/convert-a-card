@@ -6,6 +6,7 @@ import re
 import os
 import pickle
 import json
+from random import random
 
 from PIL import Image
 import numpy as np
@@ -13,19 +14,24 @@ import pandas as pd
 import streamlit as st
 import s3fs
 
+# s3 = s3fs.S3FileSystem(anon=False)
+#
+#
+# @st.cache_data
+# def load_s3(s3_path):
+#     with s3.open(s3_path, 'rb') as f:
+#         df = pickle.load(f)
+#         # st.write("Cards data loaded from S3")
+#     return df
+
+FANCY_SELECT = False
 
 st.title("Worldcat results for searches for catalogue card title/author")
 
-s3 = s3fs.S3FileSystem(anon=False)
-
-
-@st.cache_data
-def load_s3(s3_path):
-    with s3.open(s3_path, 'rb') as f:
-        df = pickle.load(f)
-        # st.write("Cards data loaded from S3")
-    return df
-
+if 'stale' not in st.session_state:
+    st.session_state['stale'] = False
+elif st.session_state['stale']:
+    st.session_state['stale'] = False
 
 # cards_df = load_s3('cac-bucket/401_cards.p')
 cards_df = pickle.load(open("notebooks/401_cards.p", "rb"))
@@ -34,9 +40,19 @@ nulls = len(cards_df) - len(cards_df.dropna(subset="worldcat_matches_subtyped"))
 cards_to_show = cards_df.dropna(subset="worldcat_matches_subtyped").copy()
 cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
 
+if FANCY_SELECT:
+    cards_to_show_selections = cards_to_show.copy()
+    cards_to_show_selections.insert(loc=1, column="select", value=False)
+    if st.session_state.get("selected_card"):
+        st.write(f"{st.session_state.get('selected_card')}, {type(st.session_state.get('selected_card'))}")
+        cards_to_show_selections.iloc[st.session_state.get("selected_card"), 1] = True
+    subset = ("card_id", "select", "title", "author", "selected_match_ocn", "match_needs_editing", "shelfmark", "lines")
+else:
+    subset = ("card_id", "title", "author", "selected_match_ocn", "match_needs_editing", "shelfmark", "lines")
+
 st.write(f"Showing {len(cards_to_show)} cards with Worldcat results out of of {len(cards_df)} total cards, "
          f"omitting {nulls} without results.")
-subset = ("card_id", "title", "author", "selected_match_ocn", "match_needs_editing", "shelfmark", "lines")
+
 
 select_c1, select_c2 = st.columns([0.4, 0.6])
 selected_card = select_c1.number_input(
@@ -45,42 +61,150 @@ selected_card = select_c1.number_input(
     help="Type or use +/-"
 )
 
-to_show_df_display = st.empty()
-#
-# def dataframe_with_selections(to_show_display, df):
-#     """
-#     Allowing to select card to work on direct from dataframe
-#     @param to_show_display:
-#     @param df:
-#     @return:
-#     """
-#     df_with_selections = df.copy()
-#     df_with_selections.insert(1, "Select", False)
-#     edited_df = to_show_display.data_editor(
-#         df_with_selections,
-#         hide_index=True,
-#         column_config={"Select": st.column_config.CheckboxColumn(required=True)},
-#         disabled=df.columns,
-#         key="select_df"
-#     )
-#     selected_indices = list(np.where(edited_df.Select)[0])
-#     selected_rows = df[edited_df.Select]
-#     return {"selected_rows_indices": selected_indices, "selected_rows": selected_rows}
-#
-#
-# selectable_to_show_df = dataframe_with_selections(to_show_df_display, cards_to_show.loc[:, subset])
-to_show_df_display.dataframe(cards_to_show.loc[:, subset], hide_index=True)  #.set_index("card_id", drop=True))
-cards_to_show["author"] = cards_df["author"].apply(lambda x: x if x else "") # [cards_to_show["author"].isna()] = ""  # handle None values
 
-# option_dropdown = st.selectbox(
-#     "Which result set do you want to choose between?",
-#     pd.Series(cards_to_show.index, index=cards_to_show.index, dtype=str)
-#     + " ti: " + cards_to_show["title"] + " au: " + cards_to_show["author"]
-# )
-# card_idx = int(option.split(" ")[0])
+def update_card_table(card_table_container):
+    cards_to_show = cards_df.dropna(subset="worldcat_matches_subtyped")
+    cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
+    if not FANCY_SELECT:
+        card_table_container.dataframe(cards_to_show.loc[:, subset], hide_index=True)
+
+    else:
+        st.session_state.pop("card_table")
+        cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
+        cards_to_show_selections = cards_to_show.copy()
+        cards_to_show_selections.insert(loc=1, column="select", value=False)
+        if st.session_state["selected_card"]:
+            cards_to_show_selections.iloc[st.session_state["selected_card"], 1] = True
+        st.write("card_table_1")
+        card_table_container.data_editor(
+            cards_to_show_selections.loc[:, subset],
+            hide_index=True,
+            column_config={"select": st.column_config.CheckboxColumn(required=True)},
+            disabled=cards_to_show.columns,
+            on_change=table_needs_refresh("card_table_1"),
+            key="card_table_1"
+        )
+
+
+def table_needs_refresh(key):
+    # key is card_table, the key of the df this is the on_change fn for
+    st.write(f"key: {key}")
+    if "selected_card" not in st.session_state:
+        st.session_state["selected_card"] = None
+    if key not in st.session_state:
+        st.write("card_table not yet in session state")
+        return None
+
+    # clear out any edited_rows that are False/empty so they don't affect len("edited_rows") calculations
+    st.write("total inc false: " + f"{len(st.session_state[key]['edited_rows'])}")
+    iter_copy = st.session_state[key]["edited_rows"].copy()
+    for k, v in iter_copy.items():
+        if not v["select"]:
+            st.session_state[key]["edited_rows"].pop(k)
+    st.write("total true: " + f"{len(st.session_state[key]['edited_rows'])}")
+
+    st.write("refreshing table")
+    st.session_state[key]
+
+    if len(st.session_state[key]["edited_rows"]) == 0:
+        st.write("no edited rows")
+
+    if len(st.session_state[key]["edited_rows"]) == 1:
+        st.session_state["selected_card"] = [int(x) for x in st.session_state[key]["edited_rows"].keys()][0]
+        st.session_state["selected_card"]
+        st.write("one edited rows")
+
+    if len(st.session_state[key]["edited_rows"]) == 2:
+        all_edited = [int(x) for x in st.session_state[key]["edited_rows"].keys()]
+        old_card = all_edited.pop(st.session_state["selected_card"])
+        new_card = all_edited[0]
+        st.write(new_card)
+        st.session_state["selected_card"] = new_card
+        st.session_state[key]["edited_rows"] = {f"{new_card}": {"select": True}}
+        st.write("updated state:")
+        st.session_state[key]
+        # update_card_table(card_table_container)
+        st.write("two edited rows")
+
+    if len(st.session_state[key]["edited_rows"]) > 2:  # too many cards clicked at once
+        all_edited = [int(x) for x in st.session_state[key]["edited_rows"].keys()]
+        old_card = all_edited.pop(st.session_state["selected_card"])
+        new_card = all_edited[0]  # pick the lowest idx of the ones the user has clicked, arbitrary choice
+        st.session_state["selected_card"] = new_card
+        st.session_state[key]["edited_rows"] = {f"{new_card}": {"select": True}}
+        st.write("more than 2 edited rows")
+
+    if st.session_state["selected_card"] == "hello":
+        if len(card_selection) == 0:
+            st.write("len = 0")
+            st.session_state["selected_card"] = None
+            st.write(st.session_state["selected_card"])
+            if st.session_state["stale"]:
+                st.write("stale")
+                # update_card_table(card_table_container)
+
+        elif len(card_selection) == 1:
+            st.write("len = 1")
+            st.write(card_selection)
+            st.session_state["selected_card"] = card_selection[-1]
+            if st.session_state["stale"]:
+                st.write("stale")
+                # update_card_table(card_table_container)
+
+        elif len(card_selection) == 2:
+            st.write("len = 2")
+            old_card = st.session_state["selected_card"]
+            st.write(f"old_card {old_card}")
+            st.write(card_selection)
+            selection = card_selection
+            selection.remove(old_card)
+            st.session_state["selected_card"] = selection[0]
+            # TODO fix references to editable_df - what should these be references to? function arg?
+            editable_df.loc[old_card, "select"] = False
+            st.write(editable_df[editable_df["select"]].drop("select", axis=1))
+            if st.session_state["stale"]:
+                st.write("stale")
+                # update_card_table(card_table_container)
+        #
+        # elif len(card_selection) > 2:  # someone's clicked too many cards, take the highest val one they've clicked
+        #     st.write("len > 2")
+        #     old_card = st.session_state["selected_card"]
+        #     all_selected = card_selection
+        #     all_selected.remove(old_card)
+        #     st.session_state["selected_card"] = all_selected[-1]
+        #     editable_df.loc[all_selected[:-1] + [old_card], "select"] = False
+        #     st.write(editable_df[editable_df["select"]].drop("select", axis=1))
+        #     if st.session_state["stale"]:
+        #         update_card_table()
+
+card_table_container = st.empty()
+
+if FANCY_SELECT:
+    # https://docs.streamlit.io/knowledge-base/using-streamlit/how-to-get-row-selections
+    editable_df = card_table_container.data_editor(
+        cards_to_show_selections.loc[:, subset],
+        hide_index=True,
+        column_config={"select": st.column_config.CheckboxColumn(required=True)},
+        disabled=cards_to_show.columns,
+        on_change=table_needs_refresh("card_table"),
+        key="card_table"
+    )
+    st.write("after table declaration")
+    card_selection = editable_df[editable_df["select"]].drop("select", axis=1).index.to_list()
+
+    if 'selected_card' not in st.session_state:
+        st.session_state['selected_card'] = None
+
+else:
+    card_table_container.dataframe(cards_to_show.loc[:, subset], hide_index=True)
+
+# TODO pretty display of column names
+# TODO enforce that when the df is saved it's saved with all 0s in the select_card column
+card_table_container.dataframe(cards_to_show.loc[:, subset], hide_index=True)
+cards_to_show["author"] = cards_df["author"].apply(lambda x: x if x else "")
+
 readable_idx = int(selected_card)
 card_idx = cards_to_show.query("card_id == @readable_idx").index.values[0]
-# card_idx = int(option)
 
 existing_selected_match = cards_to_show.loc[card_idx, "selected_match"]
 if existing_selected_match:
@@ -88,7 +212,6 @@ if existing_selected_match:
 
 st.write("\n")
 st.subheader("Select from Worldcat results")
-
 
 # p5_root = (
 #     "G:/DigiSchol/Digital Research and Curator Team/Projects & Proposals/00_Current Projects"
@@ -249,14 +372,12 @@ if existing_selected_match:
     marc_table_df = marc_table_df.style.highlight_between(subset=[existing_selected_match], color="#2FD033")
 marc_table.dataframe(marc_table_df)
 
-
-def update_display(marc_table_df=None, update_marc_table=False):
-    cards_to_show = cards_df.dropna(subset="worldcat_matches_subtyped")
-    cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
-    to_show_df_display.dataframe(cards_to_show.loc[:, subset], hide_index=True)  # subset defined line 34
-    if update_marc_table:
-        marc_table.dataframe(marc_table_df.style.highlight_between(subset=[selected_match], color="#2FD033"))
-
+def update_marc_table(table, df):
+    if type(df) == pd.DataFrame:
+        table.dataframe(df.style.highlight_between(subset=[selected_match], color="#2FD033"))
+    else:
+        styler = df
+        table.dataframe(styler)
 
 with st.form("record_selection"):
     col1, col2, col3 = st.columns(3)
@@ -288,7 +409,8 @@ with st.form("record_selection"):
         #     pickle.dump(cards_df, f)
         pickle.dump(cards_df, open("notebooks/401_cards.p", "wb"))
         st.cache_data.clear()  # Needed if pulling from S3
-        update_display(marc_table_df, update_marc_table=True)
+        update_card_table(card_table_container)
+        update_marc_table(marc_table, marc_table_df)
         st.markdown("### Selection saved!")
 
     if clear_res:
@@ -297,5 +419,5 @@ with st.form("record_selection"):
         #     pickle.dump(cards_df, f)
         pickle.dump(cards_df, open("notebooks/401_cards.p", "wb"))
         st.cache_data.clear()  # Needed if pulling from S3
-        update_display()
+        update_card_table(card_table_container)
         st.markdown("### Selection cleared!")
