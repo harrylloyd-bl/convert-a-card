@@ -261,7 +261,7 @@ match_df["good_encoding_level"] = match_df["record"].apply(lambda x: x.leader[17
 match_df["record_length"] = match_df["record"].apply(lambda x: len(x.get_fields()))
 
 def get_pub_date(record):
-    # just take the first occurence as pub date, otherwise include in search anyway
+    # Look for a date in first 260$c, if absent include in search anyway
     f260 = record.get_fields("260")
     c_subfields = []
     for x in f260:
@@ -271,11 +271,15 @@ def get_pub_date(record):
         match = re_260c.search(c_subfields[0])
         if match:
             return int(match.group())
+        else:
+            return -9999
     else:
         return -9999
 
+
 match_df["publication_date"] = match_df["record"].apply(lambda x: get_pub_date(x))
 
+all_marc_fields = sorted(list(set(match_df["record"].apply(lambda x: [y.tag for y in x.get_fields()]).sum())))
 
 def pretty_filter_option(option):
     display_dict = {
@@ -312,21 +316,43 @@ with st.form("filters"):
         default="English"
     )
 
-    pub_date_slider_col, any_date_col = st.columns([0.78, 0.22])
-    date_slider = pub_date_slider_col.select_slider(  # TODO needs to be select slider w available unique values
+    st.write("####")
+    _, date_slider_col, _ = st.columns([0.05, 0.9, 0.05])
+    date_slider = date_slider_col.select_slider(
         label='Select publication year',
-        options=match_df["publication_date"].sort_values().dropna().unique().astype(int),
-        value=(match_df["publication_date"].min(), match_df["publication_date"].max()),
+        options=match_df.query("publication_date > -9999")["publication_date"].sort_values().dropna().unique().astype(int),
+        value=(match_df.query("publication_date > -9999")["publication_date"].min(), match_df["publication_date"].max()),
         help=("Records with no publication date will remain included in the MARC table. "
-              "Publication date defined as a 4-digit number in 260$c")
+              "All records including records with no publication date are included by default when the sliders are in their default end positions. "
+              "Publication year defined as a 4-digit number in 260$c")
     )
 
-    any_date = any_date_col.checkbox(
-        "Allow any publication year",
-        help="Overrides the publication year slider. Use if e.g. there is no date given on the card."
+    st.write("####")
+    generic_field_col, generic_field_contains_col, include_recs_without_field_col = st.columns([0.3, 0.475, 0.225])
+    search_on_marc_fields = generic_field_col.multiselect(
+        "Select MARC field",
+        all_marc_fields,
+        help="[LoC MARC fields](https://www.loc.gov/marc/bibliographic/)"
     )
+    search_terms = generic_field_contains_col.text_input(
+        "MARC field contains",
+        help=("For multiple fields separate terms by a semi-colon. "
+              "e.g. if specifying fields 010, 300 then search term might be '2001627090; 140 pages'."
+              "Searching on a field with repeat fields searches all the repeat fields"
+              )
+    )
+    search_terms = search_terms.split(";")
+    if search_terms == [""]: search_terms = []
+    include_recs_without_field = include_recs_without_field_col.checkbox("Allow records without specified MARC fields")
+
+    if len(search_on_marc_fields) != len(search_terms):
+        st.markdown(
+            (f":red[**Searching on {len(search_on_marc_fields)} MARC fields, "
+             f"but {len(search_terms.split(';'))} search terms specified. "
+             f"Please change number of searched on MARC fields or number of ';' seperated search terms**]")
+        )
+
     sort_options_col, apply_col = st.columns([0.7, 0.3])
-
     sort_options = sort_options_col.multiselect(
         label=(
             "Select how to sort matching records. The default is the order the results are returned from Worldcat."
@@ -336,20 +362,16 @@ with st.form("filters"):
         format_func=pretty_filter_option
     )
 
+    apply_col.write("####")
     apply_filters = apply_col.form_submit_button(
         label="Apply filters"
     )
 
-filtered_df = match_df.query("language in @lang_select").copy()
-if not any_date:
-    filtered_df = pd.concat(
-        [
-            match_df.query("@date_slider[0] < publication_date < @date_slider[1]"),
-            match_df[match_df["publication_date"].isna()]
-        ]
-    ).sort_index()
+filtered_df = match_df.query(
+    ("language in @lang_select & ((@date_slider[0] <= publication_date and publication_date <= @date_slider[1]) or publication_date == -9999)")
+).copy()
 
-matches_to_show = filtered_df.sort_values(
+sorted_filtered_df = filtered_df.sort_values(
     by=sort_options,
     ascending=False
 )
@@ -392,18 +414,43 @@ def sort_fields_idx(index: pd.Index) -> pd.Index:
 
 
 displayed_matches = []
-for i in range(len(matches_to_show)):
-    res = matches_to_show.iloc[i, 0].get_fields()
-    ldr = matches_to_show.iloc[i, 0].leader
+for i in range(len(sorted_filtered_df)):
+    res = sorted_filtered_df.iloc[i, 0].get_fields()
+    ldr = sorted_filtered_df.iloc[i, 0].leader
     col = pd.DataFrame(
         index=pd.Index(["LDR"] + [x.tag for x in res], name="MARC Field"),
         data=[ldr] + [x.__str__()[6:] for x in res],
-        columns=[matches_to_show.iloc[i].name]
+        columns=[sorted_filtered_df.iloc[i].name]
     )
     displayed_matches.append(gen_unique_idx(col))
 
-st_display_df = pd.concat(displayed_matches, axis=1).sort_index(key=sort_fields_idx)
-match_ids = st_display_df.columns.tolist()
+marc_table_all_recs_df = pd.concat(displayed_matches, axis=1).sort_index(key=sort_fields_idx)
+
+def filter_on_generic_fields(df, fields, terms, include_recs_without_field):
+    """
+    Input the marc_table_df with all records
+    sum all repeat columns and transpose to make searching easier
+    Search each column in fields for the corresponding term in terms
+    Return a df with only records that match the search terms
+    @param df:
+    @param fields:
+    @param terms:
+    @return:
+    """
+    if not fields or not terms:
+        return df
+
+    t_df = df.groupby(level=0).sum().T
+    terms = [x.strip() for x in terms]
+    filter_df = pd.concat([t_df[field].str.contains(term) for field, term in zip(fields, terms)], axis=1)
+    if include_recs_without_field:
+        filter = filter_df.all(axis=1)
+    else:
+        filter = filter_df.where(lambda x: ~x.isna(), False).all(axis=1)
+    return df.T[filter].T
+
+marc_table_filtered_recs = filter_on_generic_fields(marc_table_all_recs_df, search_on_marc_fields, search_terms, include_recs_without_field)
+match_ids = marc_table_filtered_recs.columns.tolist()
 
 record = "records"
 if len(records_to_ignore) == 1: record = "record"
@@ -417,7 +464,7 @@ filtered_records_text = f"""
 ic_left.write(filtered_records_text)
 
 records_to_display = [x for x in match_ids if x not in records_to_ignore]
-marc_table_df = st_display_df.loc[:, records_to_display[:max_to_display]].dropna(how="all")
+marc_table_df = marc_table_all_recs_df.loc[:, records_to_display[:max_to_display]].dropna(how="all")
 if existing_selected_match and existing_selected_match in marc_table_df.columns:
     marc_table_df = marc_table_df.style.highlight_between(subset=[existing_selected_match], color="#2FD033")
 marc_table.dataframe(marc_table_df)
