@@ -227,19 +227,13 @@ search_term = f"https://www.worldcat.org/search?q=ti%3A{search_ti}+AND+au%3A{sea
 ic_left, ic_centred, ic_right = st.columns([0.3,0.6,0.1])
 ic_centred.image(Image.open(card_jpg_path), use_column_width=True)
 label_text = f"""
-**Right**:  
-Catalogue card\n
-**Below**:  
-OCLC MARC match table\n
-Filters and sort options are below the table\n
-You can also check the [Worldcat search]({search_term}) for this card
+**Right**: Catalogue card   
+You can check the [Worldcat search]({search_term}) for this card\n
 """
 ic_left.write(label_text)
 
 marc_table = st.empty()
 match_df = pd.DataFrame({"record": list(cards_to_show.loc[card_idx, "worldcat_matches_subtyped"])})
-
-max_to_display_col, removed_records_col = st.columns([0.3, 0.7])
 
 # filter options
 match_df["has_title"] = match_df["record"].apply(lambda x: bool(x.get_fields("245")))
@@ -253,33 +247,40 @@ re_040b = re.compile(r"\$b[a-z]+\$")
 match_df["language_040$b"] = match_df["record"].apply(lambda x: re_040b.search(x.get_fields("040")[0].__str__()).group())
 match_df["language"] = match_df["language_040$b"].str[2:-1].map(lang_dict["codes"])
 
-lang_select = st.multiselect(
-    "Select Cataloguing Language (040 $b)",
-    match_df["language"].unique(),
-    format_func=lambda x: f"{x} ({len(match_df.query('language == @x'))} total)"
-)
+# filter option columns defined below to display in the filters users can choose from
+filter_options = ["num_subject_access", "num_rda", "num_linked", "has_phys_desc", "good_encoding_level", "record_length"]
 
-if not lang_select:
-    filtered_df = match_df
-else:
-    filtered_df = match_df.query("language in @lang_select").copy()
+subject_access_fields = ["600", "610", "611", "630", "647", "648", "650", "651", "653", "654", "655", "656", "657", "658", "662", "688"]
+rda_fields = ["264", "336", "337", "338", "344", "345", "346", "347"]
+match_df["num_subject_access"] = match_df["record"].apply(lambda x: len(x.get_fields(*subject_access_fields)))
+match_df["num_rda"] = match_df["record"].apply(lambda x: len(x.get_fields(*rda_fields)))
 
-# sort options
-subject_access = [
-    "600", "610", "611", "630", "647", "648", "650", "651",
-    "653", "654", "655", "656", "657", "658", "662", "688"
-]
+match_df["num_linked"] = match_df["record"].apply(lambda x: len(x.get_fields("880")))
+match_df["has_phys_desc"] = match_df["record"].apply(lambda x: bool(x.get_fields("300")))
+match_df["good_encoding_level"] = match_df["record"].apply(lambda x: x.leader[17] not in [3, 5, 7])
+match_df["record_length"] = match_df["record"].apply(lambda x: len(x.get_fields()))
 
-filtered_df["num_subject_access"] = filtered_df["record"].apply(lambda x: len(x.get_fields(*subject_access)))
-filtered_df["num_linked"] = filtered_df["record"].apply(lambda x: len(x.get_fields("880")))
-filtered_df["has_phys_desc"] = filtered_df["record"].apply(lambda x: bool(x.get_fields("300")))
-filtered_df["good_encoding_level"] = filtered_df["record"].apply(lambda x: x.leader[17] not in [3, 5, 7])
-filtered_df["record_length"] = filtered_df["record"].apply(lambda x: len(x.get_fields()))
+def get_pub_date(record):
+    # just take the first occurence as pub date, otherwise include in search anyway
+    f260 = record.get_fields("260")
+    c_subfields = []
+    for x in f260:
+        c_subfields.extend(x.get_subfields("c"))
+    re_260c = re.compile(r"[0-9]{4,4}")
+    if c_subfields:
+        match = re_260c.search(c_subfields[0])
+        if match:
+            return int(match.group())
+    else:
+        return -9999
+
+match_df["publication_date"] = match_df["record"].apply(lambda x: get_pub_date(x))
 
 
 def pretty_filter_option(option):
     display_dict = {
         "num_subject_access": "Number of subject access fields",
+        "num_rda": "Number of RDA fields",
         "num_linked": "Number of linked fields",
         "has_phys_desc": "Has a physical description",
         "good_encoding_level": "Encoding level not 3/5/7",
@@ -287,16 +288,71 @@ def pretty_filter_option(option):
     }
     return display_dict[option]
 
+st.header(body="", anchor="filters")
+with st.form("filters"):
+    max_to_display_col, removed_records_col = st.columns([0.3, 0.7])
 
-sort_options = st.multiselect(
-    label=(
-        "Select how to sort matching records. The default is the order the results are returned from Worldcat."
-        " Results will be sorted in the order options are selected"
-    ),
-    options=["num_subject_access", "num_linked", "has_phys_desc", "good_encoding_level", "record_length"],
-    format_func=pretty_filter_option
+    max_to_display_help = """
+    Select the number of records to display in the MARC table above.  
+    Setting this value very high can lead to lots of mostly blank rows to scroll through.
+    """
+    max_to_display = int(
+        max_to_display_col.number_input("Max records to display", min_value=1, value=5, help=max_to_display_help))
+
+    # It is possible to remove a previously selected record from the comparison
+    records_to_ignore = removed_records_col.multiselect(
+        label="Select incorrect records you'd like to remove from the comparison",
+        options=match_df.index
+    )
+
+    lang_select = st.multiselect(
+        "Select Cataloguing Language (040 $b)",
+        match_df["language"].unique(),
+        format_func=lambda x: f"{x} ({len(match_df.query('language == @x'))} total)",
+        default="English"
+    )
+
+    pub_date_slider_col, any_date_col = st.columns([0.78, 0.22])
+    date_slider = pub_date_slider_col.select_slider(  # TODO needs to be select slider w available unique values
+        label='Select publication year',
+        options=match_df["publication_date"].sort_values().dropna().unique().astype(int),
+        value=(match_df["publication_date"].min(), match_df["publication_date"].max()),
+        help=("Records with no publication date will remain included in the MARC table. "
+              "Publication date defined as a 4-digit number in 260$c")
+    )
+
+    any_date = any_date_col.checkbox(
+        "Allow any publication year",
+        help="Overrides the publication year slider. Use if e.g. there is no date given on the card."
+    )
+    sort_options_col, apply_col = st.columns([0.7, 0.3])
+
+    sort_options = sort_options_col.multiselect(
+        label=(
+            "Select how to sort matching records. The default is the order the results are returned from Worldcat."
+            " Results will be sorted in the order options are selected"
+        ),
+        options=filter_options,
+        format_func=pretty_filter_option
+    )
+
+    apply_filters = apply_col.form_submit_button(
+        label="Apply filters"
+    )
+
+filtered_df = match_df.query("language in @lang_select").copy()
+if not any_date:
+    filtered_df = pd.concat(
+        [
+            match_df.query("@date_slider[0] < publication_date < @date_slider[1]"),
+            match_df[match_df["publication_date"].isna()]
+        ]
+    ).sort_index()
+
+matches_to_show = filtered_df.sort_values(
+    by=sort_options,
+    ascending=False
 )
-
 
 def gen_unique_idx(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -335,11 +391,6 @@ def sort_fields_idx(index: pd.Index) -> pd.Index:
         return pd.Index(key)
 
 
-matches_to_show = filtered_df.sort_values(
-    by=sort_options,
-    ascending=False
-)
-
 displayed_matches = []
 for i in range(len(matches_to_show)):
     res = matches_to_show.iloc[i, 0].get_fields()
@@ -351,24 +402,23 @@ for i in range(len(matches_to_show)):
     )
     displayed_matches.append(gen_unique_idx(col))
 
-
-max_to_display_help = """
-Select the number of records to display in the MARC table above.  
-Setting this value very high can lead to lots of mostly blank rows to scroll through.
-"""
-max_to_display = int(max_to_display_col.number_input("Max records to display", min_value=1, value=5, help=max_to_display_help))
-
 st_display_df = pd.concat(displayed_matches, axis=1).sort_index(key=sort_fields_idx)
 match_ids = st_display_df.columns.tolist()
-records_to_ignore = removed_records_col.multiselect(
-    label="Select bad records you'd like to remove from the comparison",
-    options=match_ids
-)
 
-ic_left.write(f"Displaying {max_to_display} of {len(match_ids)} records, excluding {len(records_to_ignore)} bad records")
+record = "records"
+if len(records_to_ignore) == 1: record = "record"
+
+filtered_records_text = f"""
+[Max records to display](#filters) set to {max_to_display}. Displaying {max_to_display} of {len(match_ids)} filtered records.\n
+{len(match_df)} total records.  
+{len(match_df) - len(match_ids)} removed by filters.  
+{len(records_to_ignore)} incorrect {record} removed by user.
+"""
+ic_left.write(filtered_records_text)
+
 records_to_display = [x for x in match_ids if x not in records_to_ignore]
 marc_table_df = st_display_df.loc[:, records_to_display[:max_to_display]].dropna(how="all")
-if existing_selected_match:
+if existing_selected_match and existing_selected_match in marc_table_df.columns:
     marc_table_df = marc_table_df.style.highlight_between(subset=[existing_selected_match], color="#2FD033")
 marc_table.dataframe(marc_table_df)
 
@@ -380,20 +430,20 @@ def update_marc_table(table, df):
         table.dataframe(styler)
 
 with st.form("record_selection"):
-    col1, col2, col3 = st.columns(3)
-    selected_match = col1.radio(
+    closest_result_col, editing_required_col, save_col = st.columns(3)
+    selected_match = closest_result_col.radio(
         label="Which is the closest Worldcat result?",
         options=(records_to_display[:max_to_display] + ["No correct results"])
     )
-    needs_editing = col2.radio(
+    needs_editing = editing_required_col.radio(
         label="Does this record need manual editing or is it ready to ingest?",
         options=[True, False],
         format_func=lambda x: {True: "Manual editing", False: "Ready to ingest"}[x]
     )
-    save_res = col3.form_submit_button(
+    save_res = save_col.form_submit_button(
         label="Save selection"
     )
-    clear_res = col3.form_submit_button(
+    clear_res = save_col.form_submit_button(
         label="Clear selection"
     )
 
