@@ -207,8 +207,9 @@ readable_idx = int(selected_card)
 card_idx = cards_to_show.query("card_id == @readable_idx").index.values[0]
 
 existing_selected_match = cards_to_show.loc[card_idx, "selected_match"]
-if existing_selected_match:
-    select_c2.markdown(":green[**This record has already been matched!**]")
+if existing_selected_match:  # U+2800 is a blank character to help centre the green text vertically in the column
+    select_c2.write("""\u2800  
+                    :green[**This record has already been matched!**]""")
 
 st.write("\n")
 st.subheader("Select from Worldcat results")
@@ -227,8 +228,8 @@ search_term = f"https://www.worldcat.org/search?q=ti%3A{search_ti}+AND+au%3A{sea
 ic_left, ic_centred, ic_right = st.columns([0.3,0.6,0.1])
 ic_centred.image(Image.open(card_jpg_path), use_column_width=True)
 label_text = f"""
-**Right**: Catalogue card   
-You can check the [Worldcat search]({search_term}) for this card\n
+**Right**: Catalogue card  
+You can check the [Worldcat search]({search_term}) for this card
 """
 ic_left.write(label_text)
 
@@ -292,7 +293,9 @@ def pretty_filter_option(option):
     }
     return display_dict[option]
 
-st.header(body="", anchor="filters")
+_header, apply_filters_text = st.columns([0.01, 0.99])
+_header.header(body="", anchor="filters")
+apply_filters_text.write("Click 'Apply filters' at bottom of box to apply filters")
 with st.form("filters"):
     max_to_display_col, removed_records_col = st.columns([0.3, 0.7])
 
@@ -352,7 +355,7 @@ with st.form("filters"):
              f"Please change number of searched on MARC fields or number of ';' seperated search terms**]")
         )
 
-    sort_options_col, apply_col = st.columns([0.7, 0.3])
+    sort_options_col, _, apply_col = st.columns([0.7, 0.05, 0.25])
     sort_options = sort_options_col.multiselect(
         label=(
             "Select how to sort matching records. The default is the order the results are returned from Worldcat."
@@ -463,18 +466,35 @@ filtered_records_text = f"""
 """
 ic_left.write(filtered_records_text)
 
+
+def gen_gmap(col):
+    counts = col.value_counts()
+    to_highlight = counts[counts > 1]
+    no_highlight = counts[counts == 1]
+    colour_vals = np.linspace(0, 1, len(to_highlight) + 2)[1:-1]
+    mapping = {k:v for k,v in zip(to_highlight.index, colour_vals)}
+    for val in no_highlight.index:
+        mapping[val] = -10
+    return col.map(mapping, na_action='ignore')
+
+
+def style_marc_df(df):
+    gmap = df.apply(gen_gmap, axis=1)
+    gmap[gmap.isna()] = -10
+    gmap[1::3] += 0.05
+    gmap[2::3] += 0.1
+    styled_df = df.style.background_gradient(gmap=gmap, vmin=0, vmax=1, axis=None)
+    if existing_selected_match and existing_selected_match in df.columns:
+        styled_df = styled_df.highlight_between(subset=[existing_selected_match], color="#2FD033A0")
+    return styled_df
+
+
 records_to_display = [x for x in match_ids if x not in records_to_ignore]
 marc_table_df = marc_table_all_recs_df.loc[:, records_to_display[:max_to_display]].dropna(how="all")
-if existing_selected_match and existing_selected_match in marc_table_df.columns:
-    marc_table_df = marc_table_df.style.highlight_between(subset=[existing_selected_match], color="#2FD033")
-marc_table.dataframe(marc_table_df)
+marc_table.dataframe(style_marc_df(marc_table_df))
 
 def update_marc_table(table, df):
-    if type(df) == pd.DataFrame:
-        table.dataframe(df.style.highlight_between(subset=[selected_match], color="#2FD033"))
-    else:
-        styler = df
-        table.dataframe(styler)
+    return table.dataframe(style_marc_df(df))
 
 with st.form("record_selection"):
     closest_result_col, editing_required_col, save_col = st.columns(3)
