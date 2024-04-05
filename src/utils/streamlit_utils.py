@@ -60,6 +60,60 @@ def gen_unique_idx(df: pd.DataFrame) -> pd.DataFrame:
     return out_df.set_index("Repeat Field ID", append=True)
 
 
+def add_subfield_rpt(df, field, split_chr, split_idx):
+    repeat_id = [str(x) for x in range(len(df.loc[field:field]))]
+    if repeat_id == ["0"]: #TODO not assinging the subfield correctly for fields with only one repeat
+        df.loc[field, "Subfield":"Subfield"] = df.loc[field, df.columns[0]:df.columns[0]].str.split(split_chr).transform(lambda x: x[split_idx])
+    else:
+        df.loc[field, "Subfield":"Subfield"] = df.loc[field, df.columns[0]].str.split(split_chr).transform(lambda x: x[split_idx])
+    df.loc[field, "Rpt":"Rpt"] = repeat_id
+
+def gen_sf_rpt_unique_idx(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Generate a unique index from one that contains repeated fields
+    @param out_df: pd.DataFrame
+    @return: pd.DataFrame
+    """
+    out_df = df.copy()
+    out_df["Subfield"] = ""
+    out_df["Rpt"] = ""
+    dup_idx = out_df.index[out_df.index.duplicated()].unique()
+    unhandled_fields = [x for x in dup_idx if x not in ["500", "650", "880"]]
+
+    for field, split_chr, split_idx in zip(["500", "650", "880"], ["$", "$", "$"], [0, 0, 1]):
+        if field in out_df.index:
+            add_subfield_rpt(out_df, field, split_chr, split_idx)
+    for dup in unhandled_fields:
+        out_df.loc[dup, "Rpt"] = [str(x) for x in range(len(out_df.loc[dup]))]
+
+    return out_df.set_index(["Subfield", "Rpt"], append=True)
+
+
+def sort_fields_idx(index: pd.Index) -> pd.Index:
+    """
+    Specific keys to sort indices containing MARC fields
+    @param index: pd.Index
+    @return: pd.Index
+    """
+    if index.name == "Field":
+        key = [0 if x == "LDR" else int(x) for x in index]
+        return pd.Index(key)
+    elif index.name == "Repeat Field ID":
+        key = [x.split("$")[1] if "$" in x else x for x in index]
+        return pd.Index(key)
+
+
+def sort_sf_rpt_fields_idx(index):
+    if index.name == "Field":
+        key = [0 if x == "LDR" else int(x) for x in index]
+        return pd.Index(key)
+    elif index.name == "Subfield":
+        key = [x.split("$")[1] if "$" in x else x for x in index]
+        return pd.Index(key)
+    elif index.name == "Rpt":
+        return index
+
+
 def simplify_6xx(df):
     """
     Pandas magic
@@ -68,21 +122,35 @@ def simplify_6xx(df):
     Set the values for the reindexed subfield to the newly reindexed one.
     If there has been reordering this leaves rows of NA at the end of the subfield that can be dropped
     """
-    df = df.copy()
-    subfields = df.loc["650"].index.get_level_values(0)
+    if df.shape[1] == 1:
+        return df
+    tidy_df = df.copy()
+    subfields = tidy_df.loc["650"].index.get_level_values(0).unique()
     for sf in subfields:
-        sf_orig = df.loc[("650", sf), :]
+        sf_orig = tidy_df.loc[("650", sf), :]
         sf_unique_vals = pd.Series(sf_orig.values.flatten()).dropna().unique()
+        if len(sf_orig) < len(sf_unique_vals):
+            continue
         sf_unique_df = pd.DataFrame(data=sf_unique_vals, columns=pd.Index(["unique_vals"]))
-        for x in df.columns:
+        for x in sf_orig.columns:
             sf_unique_df = sf_unique_df.merge(sf_orig[x], how="left", left_on="unique_vals", right_on=x)
         replacement_df = sf_unique_df.set_index(sf_orig.index[:len(sf_unique_df)]).reindex(sf_orig.index).drop(
             columns="unique_vals")
         replacement_df["Field"] = "650"
-        replacement_df["Subfield"] = "\\7"
-        replacement_df = replacement_df.reindex(["Field", "Subfield"], append=True).reorder_levels([1, 2, 0])
-        df.loc[("650", sf), :] = replacement_df
-    return df
+        replacement_df["Subfield"] = sf
+        replacement_df = replacement_df.set_index(["Field", "Subfield"], append=True).reorder_levels([1, 2, 0])
+        if not replacement_df.reset_index(drop=True).equals(sf_orig.reset_index(drop=True)):
+            tidy_df.loc[("650", sf), :] = replacement_df
+        else: # No overlapping terms so flatten naively
+            sf_orig_blank_idx = sf_orig.reset_index(drop=True)
+            blank_idx_df = sf_orig.reset_index().drop(columns=sf_orig.columns)
+            for x in sf_orig_blank_idx.columns:
+                blank_idx_df = blank_idx_df.join(sf_orig_blank_idx[x].dropna().reset_index(drop=True))
+            blank_idx_df["Field"] = "650"
+            blank_idx_df["Subfield"] = sf
+            replacement_df = blank_idx_df.set_index(["Field", "Subfield", "Rpt"])
+            tidy_df.loc[("650", sf), :] = replacement_df
+    return tidy_df
 
 
 def filter_on_generic_fields(df, fields, terms, include_recs_without_field):
@@ -156,20 +224,6 @@ def create_filter_columns(df, lang_dict, search_au):
     df["publication_date"] = df["record"].apply(lambda x: get_pub_date(x))
 
     return df
-
-
-def sort_fields_idx(index: pd.Index) -> pd.Index:
-    """
-    Specific keys to sort indices containing MARC fields
-    @param index: pd.Index
-    @return: pd.Index
-    """
-    if index.name == "MARC Field":
-        key = [0 if x == "LDR" else int(x) for x in index]
-        return pd.Index(key)
-    elif index.name == "Repeat Field ID":
-        key = [x.split("$")[1] if "$" in x else x for x in index]
-        return pd.Index(key)
 
 
 def update_marc_table(table, df, highlight_button, match_exists):

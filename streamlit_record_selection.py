@@ -8,6 +8,7 @@ import pickle
 import pandas as pd
 import streamlit as st
 from PIL import Image
+import s3fs
 
 import cfg
 from src.utils import streamlit_utils as st_utils
@@ -16,8 +17,27 @@ FANCY_SELECT = False
 
 st.title("Worldcat results for searches for catalogue card title/author")
 
-cards_df = pickle.load(open("notebooks/401_cards.p", "rb"))
-cards_df = cards_df.iloc[:175].copy()  # just while we can't access the network drives
+with open("sidebar_docs.txt", encoding="utf-8") as f:
+    sidebar_docs_txt = f.read()
+with st.sidebar:
+    st.markdown(sidebar_docs_txt)
+
+if os.path.exists("notebooks/401_cards.p"):
+    st.write("Loaded cards info from local")
+    cards_df = pickle.load(open("notebooks/401_cards.p", "rb"))
+else:
+    st.write("Loaded cards info from AWS")
+    s3 = s3fs.S3FileSystem(anon=False)
+
+    @st.cache_data
+    def load_s3(s3_path):
+        with s3.open(s3_path, 'rb') as f:
+            df = pickle.load(f)
+            # st.write("Cards data loaded from S3")
+        return df
+
+    cards_df = load_s3('cac-bucket/cards_df.p')
+
 nulls = len(cards_df) - len(cards_df.dropna(subset="worldcat_matches_subtyped"))
 cards_to_show = cards_df.dropna(subset="worldcat_matches_subtyped").copy()
 cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
@@ -57,7 +77,7 @@ if MATCH_EXISTS:  # U+2800 is a blank character to help centre the green text ve
 st.write("\n")
 st.subheader("Select from Worldcat results")
 
-card_jpg_path = os.path.join("data/images", cards_to_show.loc[card_idx, "xml"][:-5] + ".jpg")
+card_jpg_path = os.path.join("data/raw/chinese/1016992", cards_to_show.loc[card_idx, "xml"][:-5] + ".jpg")
 
 search_ti = cards_to_show.loc[card_idx, 'title'].replace(' ', '+')
 search_au = cards_to_show.loc[card_idx, 'author'].replace(' ', '+')
@@ -163,29 +183,25 @@ with st.form("filters"):
         label="Apply filters"
     )
 
-filtered_df = match_df.query(
-    (
-        "language in @lang_select & ((@date_slider[0] <= publication_date and publication_date <= @date_slider[1]) or publication_date == -9999)")
-).copy()
+filter_query = "language in @lang_select & ((@date_slider[0] <= publication_date and publication_date <= @date_slider[1]) or publication_date == -9999)"
+filtered_df = match_df.query(filter_query).copy()
+sorted_filtered_df = filtered_df.sort_values(by=sort_options, ascending=False)
 
-sorted_filtered_df = filtered_df.sort_values(
-    by=sort_options,
-    ascending=False
-)
-
-displayed_matches = []
+formatted_records, fmt_new_idx = [], []
 for i in range(len(sorted_filtered_df)):
     res = sorted_filtered_df.iloc[i, 0].get_fields()
     ldr = sorted_filtered_df.iloc[i, 0].leader
     col = pd.DataFrame(
-        index=pd.Index(["LDR"] + [x.tag for x in res], name="MARC Field"),
+        index=pd.Index(["LDR"] + [x.tag for x in res], name="Field"),
         data=[ldr] + [x.__str__()[6:] for x in res],
         columns=[sorted_filtered_df.iloc[i].name]
     )
-    displayed_matches.append(st_utils.gen_unique_idx(col))
+    formatted_records.append(st_utils.gen_unique_idx(col))
+    fmt_new_idx.append(st_utils.gen_sf_rpt_unique_idx(col))
 
-marc_table_all_recs_df = pd.concat(displayed_matches, axis=1).sort_index(key=st_utils.sort_fields_idx)
-# st_utils.simplify_6xx(marc_table_all_recs_df)
+marc_table_all_recs_df = pd.concat(formatted_records, axis=1).sort_index(key=st_utils.sort_fields_idx)
+new_marc_table = pd.concat(fmt_new_idx, axis=1).sort_index()
+st_utils.simplify_6xx(new_marc_table)
 
 marc_table_filtered_recs = st_utils.filter_on_generic_fields(marc_table_all_recs_df, search_on_marc_fields,
                                                              search_terms, include_recs_without_field)
