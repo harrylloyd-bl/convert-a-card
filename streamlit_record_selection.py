@@ -22,21 +22,20 @@ with open("sidebar_docs.txt", encoding="utf-8") as f:
 with st.sidebar:
     st.markdown(sidebar_docs_txt)
 
-if os.path.exists("notebooks/401_cards.p"):
+if not os.path.exists("data/processed/401_cards.p"):
+    cards_df = pickle.load(open("data/processed/401_cards.p", "rb"))
     st.write("Loaded cards info from local")
-    cards_df = pickle.load(open("notebooks/401_cards.p", "rb"))
 else:
-    st.write("Loaded cards info from AWS")
     s3 = s3fs.S3FileSystem(anon=False)
 
     @st.cache_data
     def load_s3(s3_path):
         with s3.open(s3_path, 'rb') as f:
             df = pickle.load(f)
-            # st.write("Cards data loaded from S3")
         return df
 
-    cards_df = load_s3('cac-bucket/cards_df.p')
+    cards_df = load_s3('cac-bucket/401_cards.p')
+    st.write("Loaded cards info from AWS")
 
 nulls = len(cards_df) - len(cards_df.dropna(subset="worldcat_matches_subtyped"))
 cards_to_show = cards_df.dropna(subset="worldcat_matches_subtyped").copy()
