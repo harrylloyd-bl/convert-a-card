@@ -22,7 +22,7 @@ with open("sidebar_docs.txt", encoding="utf-8") as f:
 with st.sidebar:
     st.markdown(sidebar_docs_txt)
 
-if not os.path.exists("data/processed/401_cards.p"):
+if os.path.exists("data/processed/401_cards.p"):
     cards_df = pickle.load(open("data/processed/401_cards.p", "rb"))
     st.write("Loaded cards info from local")
 else:
