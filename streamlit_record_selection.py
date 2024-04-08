@@ -14,6 +14,7 @@ import cfg
 from src.utils import streamlit_utils as st_utils
 
 FANCY_SELECT = False
+LOCAL_DATA = False
 
 st.title("Worldcat results for searches for catalogue card title/author")
 
@@ -22,19 +23,20 @@ with open("sidebar_docs.txt", encoding="utf-8") as f:
 with st.sidebar:
     st.markdown(sidebar_docs_txt)
 
-if os.path.exists("data/processed/401_cards.p"):
-    cards_df = pickle.load(open("data/processed/401_cards.p", "rb"))
+@st.cache_data
+def load_s3(s3_path):
+    with s3.open(s3_path, 'rb') as f:
+        df = pickle.load(f)
+    return df
+
+if LOCAL_DATA:
+    SAVE_FILE = "data/processed/401_cards.p"
+    cards_df = pickle.load(open(SAVE_FILE, "rb"))
     st.write("Loaded cards info from local")
 else:
+    SAVE_FILE = 'cac-bucket/401_cards.p'
     s3 = s3fs.S3FileSystem(anon=False)
-
-    @st.cache_data
-    def load_s3(s3_path):
-        with s3.open(s3_path, 'rb') as f:
-            df = pickle.load(f)
-        return df
-
-    cards_df = load_s3('cac-bucket/401_cards.p')
+    cards_df = load_s3(SAVE_FILE)
     st.write("Loaded cards info from AWS")
 
 nulls = len(cards_df) - len(cards_df.dropna(subset="worldcat_matches_subtyped"))
@@ -239,6 +241,8 @@ with st.form("record_selection"):
         label="Clear selection"
     )
 
+    saving_text = save_col.empty()
+
     if save_res:
         if selected_match == "None of the results are correct":
             cards_df.loc[card_idx, ["selected_match", "selected_match_ocn"]] = "No matches"
@@ -248,19 +252,28 @@ with st.form("record_selection"):
                 cards_df.loc[card_idx, "worldcat_matches_subtyped"][selected_match].get_fields("001")[0].data
             cards_df.loc[card_idx, "match_needs_editing"] = needs_editing
 
-        with s3.open('cac-bucket/cards_df.p', 'wb') as f:
-            pickle.dump(cards_df, f)
-        # pickle.dump(cards_df, open("notebooks/401_cards.p", "wb"))
-        st.cache_data.clear()  # Needed if pulling from S3
+        if LOCAL_DATA:
+            pickle.dump(cards_df, open(SAVE_FILE, "wb"))
+        else:
+            with s3.open(SAVE_FILE, 'wb') as f:
+                saving_text.markdown("#### Saving to AWS S3")
+                pickle.dump(cards_df, f)
+                st.cache_data.clear()  # Needed if pulling from S3
+
         st_utils.update_card_table(cards_df, subset, card_table_container, FANCY_SELECT)
         st_utils.update_marc_table(marc_table, marc_table_df, highlight_button, MATCH_EXISTS)
-        st.markdown("### Selection saved!")
+        saving_text.markdown("### Selection saved!")
 
     if clear_res:
         cards_df.loc[card_idx, ["selected_match", "selected_match_ocn", "match_needs_editing"]] = None
-        with s3.open('cac-bucket/cards_df.p', 'wb') as f:
-            pickle.dump(cards_df, f)
-        # pickle.dump(cards_df, open("notebooks/401_cards.p", "wb"))
-        st.cache_data.clear()  # Needed if pulling from S3
+
+        if LOCAL_DATA:
+            pickle.dump(cards_df, open(SAVE_FILE, "wb"))
+        else:
+            with s3.open(SAVE_FILE, 'wb') as f:
+                saving_text.markdown("#### Clearing from AWS S3")
+                pickle.dump(cards_df, f)
+                st.cache_data.clear()  # Needed if pulling from S3
+
         st_utils.update_card_table(cards_df, subset, card_table_container, FANCY_SELECT)
-        st.markdown("### Selection cleared!")
+        saving_text.markdown("### Selection cleared!")
