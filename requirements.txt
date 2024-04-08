@@ -1,0 +1,8 @@
+# Only need streamlit for simplicity, it depends on pillow and pandas
+streamlit
+pandas
+pillow
+tqdm
+s3fs
+pymarc
+matplotlib
