@@ -248,9 +248,9 @@ with st.form("record_selection"):
                 cards_df.loc[card_idx, "worldcat_matches_subtyped"][selected_match].get_fields("001")[0].data
             cards_df.loc[card_idx, "match_needs_editing"] = needs_editing
 
-        # with s3.open('cac-bucket/cards_df.p', 'wb') as f:
-        #     pickle.dump(cards_df, f)
-        pickle.dump(cards_df, open("notebooks/401_cards.p", "wb"))
+        with s3.open('cac-bucket/cards_df.p', 'wb') as f:
+            pickle.dump(cards_df, f)
+        # pickle.dump(cards_df, open("notebooks/401_cards.p", "wb"))
         st.cache_data.clear()  # Needed if pulling from S3
         st_utils.update_card_table(cards_df, subset, card_table_container, FANCY_SELECT)
         st_utils.update_marc_table(marc_table, marc_table_df, highlight_button, MATCH_EXISTS)
@@ -258,9 +258,9 @@ with st.form("record_selection"):
 
     if clear_res:
         cards_df.loc[card_idx, ["selected_match", "selected_match_ocn", "match_needs_editing"]] = None
-        # with s3.open('cac-bucket/cards_df.p', 'wb') as f:
-        #     pickle.dump(cards_df, f)
-        pickle.dump(cards_df, open("notebooks/401_cards.p", "wb"))
+        with s3.open('cac-bucket/cards_df.p', 'wb') as f:
+            pickle.dump(cards_df, f)
+        # pickle.dump(cards_df, open("notebooks/401_cards.p", "wb"))
         st.cache_data.clear()  # Needed if pulling from S3
         st_utils.update_card_table(cards_df, subset, card_table_container, FANCY_SELECT)
         st.markdown("### Selection cleared!")
