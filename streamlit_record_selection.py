@@ -95,6 +95,7 @@ check = list(cards_to_show.loc[card_idx, "worldcat_matches_subtyped"])
 match_df = pd.DataFrame({"record": list(cards_to_show.loc[card_idx, "worldcat_matches_subtyped"])})
 match_df = st_utils.create_filter_columns(match_df, cfg.LANG_DICT, search_au)
 all_marc_fields = sorted(list(set(match_df["record"].apply(lambda x: [y.tag for y in x.get_fields()]).sum())))
+all_languages = match_df["language"].unique()
 
 # Filters form
 _header, apply_filters_text = st.columns([0.01, 0.99])
@@ -116,22 +117,29 @@ with st.form("filters"):
         options=match_df.index
     )
 
+    if "English" in all_languages:
+        default_lang = "English"
+    else:
+        default_lang = None
+
     lang_select = st.multiselect(
         "Select Cataloguing Language (040 $b)",
         match_df["language"].unique(),
         format_func=lambda x: f"{x} ({len(match_df.query('language == @x'))} total)",
-        default="English"
+        default=default_lang
     )
 
     st.write("####")
     _, date_slider_col, _ = st.columns([0.05, 0.9, 0.05])
+    pub_dates = match_df.query("publication_date > -9999")["publication_date"].sort_values().dropna().unique().astype(int)
+    if len(pub_dates) == 0:
+        pub_dates = [1900, 2000]
+    elif len(pub_dates) == 1:
+        pub_dates = [pub_dates[0] - 1, pub_dates[0], pub_dates[0] + 1]
     date_slider = date_slider_col.select_slider(
         label='Select publication year',
-        options=match_df.query("publication_date > -9999")["publication_date"].sort_values().dropna().unique().astype(
-            int),
-        value=(
-            match_df.query("publication_date > -9999")["publication_date"].min(), match_df["publication_date"].max()
-        ),
+        options=pub_dates,
+        value=(min(pub_dates), max(pub_dates)),
         help=("Records with no publication date will remain included in the MARC table. "
               "All records including records with no publication date are included by default when the sliders are in their default end positions. "
               "Publication year defined as a 4-digit number in 260$c")
@@ -184,7 +192,11 @@ with st.form("filters"):
         label="Apply filters"
     )
 
-filter_query = "language in @lang_select & ((@date_slider[0] <= publication_date and publication_date <= @date_slider[1]) or publication_date == -9999)"
+if not lang_select:
+    lang_select = all_languages
+filter_query = "language in @lang_select" \
+               "& ((@date_slider[0] <= publication_date and publication_date <= @date_slider[1])" \
+               "or publication_date == -9999)"
 filtered_df = match_df.query(filter_query).copy()
 sorted_filtered_df = filtered_df.sort_values(by=sort_options, ascending=False)
 
@@ -198,11 +210,11 @@ for i in range(len(sorted_filtered_df)):
         columns=[sorted_filtered_df.iloc[i].name]
     )
     formatted_records.append(st_utils.gen_unique_idx(col))
-    fmt_new_idx.append(st_utils.gen_sf_rpt_unique_idx(col))
+    # fmt_new_idx.append(st_utils.gen_sf_rpt_unique_idx(col))
 
 marc_table_all_recs_df = pd.concat(formatted_records, axis=1).sort_index(key=st_utils.sort_fields_idx)
-new_marc_table = pd.concat(fmt_new_idx, axis=1).sort_index()
-st_utils.simplify_6xx(new_marc_table)
+# new_marc_table = pd.concat(fmt_new_idx, axis=1).sort_index()
+# st_utils.simplify_6xx(new_marc_table)
 
 marc_table_filtered_recs = st_utils.filter_on_generic_fields(marc_table_all_recs_df, search_on_marc_fields,
                                                              search_terms, include_recs_without_field)
