@@ -124,6 +124,9 @@ def simplify_6xx(df):
     """
     if df.shape[1] == 1:
         return df
+    elif "650" not in df.index:
+        return df
+
     tidy_df = df.copy()
     subfields = tidy_df.loc["650"].index.get_level_values(0).unique()
     for sf in subfields:
