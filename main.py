@@ -7,7 +7,6 @@ import pickle
 import xml.etree.ElementTree as ET
 from tqdm import tqdm
 import pandas as pd
-from src.data import oclc
 
 LOAD_XMLS = False
 LOAD_PICKLE = False
