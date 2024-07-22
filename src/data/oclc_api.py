@@ -132,9 +132,11 @@ async def process_queue(
                 t1 = time.perf_counter()
                 logging.debug(f"{name} api full call finished. Elapsed: {t1 - t0}")
                 queue.task_done()
+                tracker.update(n=1)
             except WorldcatRequestError as e:
                 full_bibs_out[idx].append(f"{e}")
                 queue.task_done()
+                tracker.update(n=1)
 
 
 async def async_search_brief_bib_cac(

@@ -21,11 +21,13 @@ client_secret = os.environ["CLIENT_SECRET"]
 # cards_df["brief_bibs"] = None
 # cards_df["worldcat_matches"] = None
 
-complete_music_df = pd.read_csv("data\\processed\\music_records.csv", index_col=0, dtype={"260": str})
-music_df = complete_music_df.sample(n=10000, weights="weights", axis=0, random_state=1234)
-music_df = music_df.where(~music_df.isna(), other=None)
-music_df["brief_bibs"] = None
-music_df["worldcat_matches"] = None
+# complete_music_df = pd.read_csv("data\\processed\\music_records.csv", index_col=0, dtype={"260": str})
+# music_df = complete_music_df.sample(n=10000, weights="weights", axis=0, random_state=1234)
+# music_df = music_df.where(~music_df.isna(), other=None)
+# music_df["brief_bibs"] = None
+# music_df["worldcat_matches"] = None
+
+music_df = pickle.load(open("data\\processed\\10k_music_records.p", "rb"))
 
 token = bw.WorldcatAccessToken(
     key=client_id,
@@ -47,21 +49,27 @@ async def main(records_df, out_path):
     async with bw.AsyncMetadataSession(authorization=token, headers={"User-Agent": "Convert-a-Card/1.0"}) as session:
 
         queue = asyncio.Queue()
-        subset = records_df.iloc[5000:5001]
+        subset = records_df.iloc[:]
         for row in subset.iterrows():
             idx = row[0]
+
             # title, author, isbn = row[1].loc[["title", "author", "isbn"]]
             # await queue.put((idx, title, author, isbn))
 
-            title, author, year = row[1].loc[["245", "100", "260"]]
-            await queue.put((idx, title, author, year))
+            # title, author, year = row[1].loc[["245", "100", "260"]]
+            # await queue.put((idx, title, author, year))
+            if row[1]["brief_bibs"]["numberOfRecords"] > 0:
+                for rec in row[1]["brief_bibs"]["briefRecords"]:
+                    if rec["catalogingInfo"]["catalogingAgency"] != "UKMGB":
+                        await queue.put((idx, rec["oclcNumber"]))
 
-        print("brief bib search API call progress")
-        tracker = tqdm(total=len(subset))
+        print("Creating workers")
+        print("brief bib search API call progress:")
+        tracker = tqdm(total=queue.qsize())
 
         tasks = []
         n_workers = 50  # 25 gave no errors for 5000 records
-        print("Creating workers")
+
         for i in range(n_workers):  # create workers
             task = asyncio.create_task(
                 process_queue(
@@ -91,7 +99,7 @@ async def main(records_df, out_path):
 
         # await asyncio.gather(*tasks, return_exceptions=True)
 
-        records_df["brief_bibs"] = brief_bibs
+        # records_df["brief_bibs"] = brief_bibs
         records_df["worldcat_matches"] = full_bibs
         pickle.dump(records_df, open(out_path, "wb"))
 
@@ -128,7 +136,7 @@ if __name__ == "__main__":
     t_init = time.perf_counter()
     logging.info(f"{run_id} async begin = {t_init}")
 
-    asyncio.run(main(music_df, "data\\processed\\10k_music_records_debug_3.p"))
+    asyncio.run(main(music_df, "data\\processed\\10k_music_records_debug.p"))
 
     t_final = time.perf_counter()
     logging.info(f"{run_id} async elapsed = {t_final - t_init}")
