@@ -17,5 +17,5 @@ dependencies:
   - certifi
   - openssl
   - pip:
-      - pymarc
+      - pymarc==5.1.2
 prefix: C:\Users\HLloyd\AppData\Local\mambaforge\envs\cac
