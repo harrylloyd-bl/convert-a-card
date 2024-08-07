@@ -218,9 +218,9 @@ match_ids = marc_table_filtered_recs.columns.tolist()
 
 record = "records"
 if len(records_to_ignore) == 1: record = "record"
-
+n_displayed = min([max_to_display, len(match_ids)])
 filtered_records_text = f"""
-[Max records to display](#filters) set to {max_to_display}. Displaying {max_to_display} of {len(match_ids)} filtered records.\n
+[Max records to display](#filters) set to {max_to_display}. Displaying {n_displayed} of {len(match_ids)} filtered records.\n
 {len(match_df)} total records.  
 {len(match_df) - len(match_ids)} removed by filters.  
 {len(records_to_ignore)} incorrect {record} removed by user.
