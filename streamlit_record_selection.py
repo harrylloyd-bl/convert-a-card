@@ -4,14 +4,18 @@ Will need to prepare elsewhere then pull in as pickle or csv
 """
 import os
 import pickle
+from random import random
 
 import pandas as pd
 import streamlit as st
+from st_aggrid import AgGrid, GridOptionsBuilder
 from PIL import Image
 import s3fs
 
 import cfg
 from src.utils import streamlit_utils as st_utils
+
+st.set_page_config(layout="wide")
 
 LOCAL_DATA = True
 s3 = s3fs.S3FileSystem(anon=False)
@@ -230,6 +234,19 @@ ic_left.write(filtered_records_text)
 records_to_display = [x for x in match_ids if x not in records_to_ignore]
 marc_table_df = marc_table_all_recs_df.loc[:, records_to_display[:max_to_display]].dropna(how="all")
 marc_table.dataframe(st_utils.style_marc_df(marc_table_df, highlight_button, MATCH_EXISTS))
+
+str_cols = marc_table_df.reset_index().copy()
+str_cols.columns = [str(x) for x in str_cols.columns]
+
+print(f"new run {random()}")
+grid_builder = GridOptionsBuilder.from_dataframe(str_cols)
+grid_builder.configure_columns(str_cols.columns[2:], **{"cellStyle":{'wordBreak':'normal', 'whiteSpace':'pre'}, "autoHeight": True})
+grid_options = grid_builder.build()
+grid_options['columnDefs'][0]["pinned"] = 'left'
+grid_options['columnDefs'][1]["pinned"] = 'left'
+
+ag = AgGrid(data=str_cols.transform(lambda x: x.str.replace(r"\$\w", st_utils.new_line, regex=True)), gridOptions=grid_options)
+ag.grid_options
 
 with st.form("record_selection"):
     closest_result_col, editing_required_col, save_col = st.columns(3)

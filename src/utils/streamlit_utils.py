@@ -228,8 +228,28 @@ def gen_gmap(col: pd.Series) -> pd.Series:
     return col.map(mapping, na_action='ignore')
 
 
+def br_space(s):
+    """
+    Replace latex formatted $ with full width ＄ (U+FF04)
+    Add line break and trailing space
+    @param s: re.group
+    @return: str
+    """
+    return f"<br>{s.group().replace('$','＄')} "
+
+
+def new_line(s):
+    """
+    Replace latex formatted $ with full width ＄ (U+FF04)
+    Add line break and trailing space
+    @param s: re.group
+    @return: str
+    """
+    return f"\n {s.group()}  "
+
+
 def style_marc_df(marc_df: pd.DataFrame, highlight_common_vals: bool, existing_selected_match: int) -> Styler:
-    styled_df = marc_df.style
+    styled_df = marc_df.transform(lambda x: x.str.replace(r"\$\w", br_space, regex=True)).style
     if highlight_common_vals:
         gmap = marc_df.apply(gen_gmap, axis=1)
         gmap[gmap.isna()] = -10
@@ -238,7 +258,7 @@ def style_marc_df(marc_df: pd.DataFrame, highlight_common_vals: bool, existing_s
         styled_df = styled_df.background_gradient(gmap=gmap, vmin=0, vmax=1, axis=None)
     if existing_selected_match and existing_selected_match in marc_df.columns:
         styled_df = styled_df.highlight_between(subset=[existing_selected_match], color="#2FD033A0")
-    return styled_df
+    return styled_df.set_properties(**{'text-align': 'left'})
 
 
 def create_filter_columns(record_df: pd.DataFrame, lang_dict: Dict[str, str], search_au: str) -> pd.DataFrame:
