@@ -2,10 +2,12 @@ import pickle
 import re
 from typing import Dict, List, Union
 
+from matplotlib import colormaps
 import numpy as np
 import pandas as pd
 from pandas.io.formats.style import Styler
 import streamlit as st
+from st_aggrid import GridOptionsBuilder, JsCode, AgGrid
 import s3fs
 from pymarc import Record
 
@@ -42,11 +44,11 @@ def get_008_date(record: Record) -> str:
     """
     f008 = record.get_fields("008")[0].data
     date_type = f008[6]
-    map = {
+    date_map = {
         's': slice(7, 11), 'r': slice(7, 11), 'q': slice(7, 15), 'n': slice(0, 0), 'm': slice(7, 15),
         'c': slice(7, 15), 't': slice(7, 11), 'd': slice(7, 15), 'e': slice(7, 11), 'i': slice(7, 15)
     }
-    return f008[map[date_type]]
+    return f008[date_map[date_type]]
 
 
 def pretty_filter_option(option: str) -> str:
@@ -94,16 +96,17 @@ def gen_unique_idx(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_subfield_rpt(df, field, split_chr, split_idx):
     repeat_id = [str(x) for x in range(len(df.loc[field:field]))]
-    if repeat_id == ["0"]: #TODO not assinging the subfield correctly for fields with only one repeat
+    if repeat_id == ["0"]:  # TODO not assinging the subfield correctly for fields with only one repeat
         df.loc[field, "Subfield":"Subfield"] = df.loc[field, df.columns[0]:df.columns[0]].str.split(split_chr).transform(lambda x: x[split_idx])
     else:
         df.loc[field, "Subfield":"Subfield"] = df.loc[field, df.columns[0]].str.split(split_chr).transform(lambda x: x[split_idx])
     df.loc[field, "Rpt":"Rpt"] = repeat_id
 
+
 def gen_sf_rpt_unique_idx(df: pd.DataFrame) -> pd.DataFrame:
     """
     Generate a unique index from one that contains repeated fields
-    @param out_df: pd.DataFrame
+    @param df: pd.DataFrame
     @return: pd.DataFrame
     """
     out_df = df.copy()
@@ -176,7 +179,7 @@ def simplify_6xx(df: pd.DataFrame) -> pd.DataFrame:
         replacement_df = replacement_df.set_index(["Field", "Subfield"], append=True).reorder_levels([1, 2, 0])
         if not replacement_df.reset_index(drop=True).equals(sf_orig.reset_index(drop=True)):
             tidy_df.loc[("650", sf), :] = replacement_df
-        else: # No overlapping terms so flatten naively
+        else:  # No overlapping terms so flatten naively
             sf_orig_blank_idx = sf_orig.reset_index(drop=True)
             blank_idx_df = sf_orig.reset_index().drop(columns=sf_orig.columns)
             for x in sf_orig_blank_idx.columns:
@@ -202,7 +205,8 @@ def filter_on_generic_fields(
     @param marc_df:
     @param fields:
     @param terms:
-    @return:
+    @param include_recs_without_field: bool
+    @return: pd.DataFrame
     """
     if not fields or not terms:
         return marc_df
@@ -217,48 +221,136 @@ def filter_on_generic_fields(
     return marc_df.T[df_filter].T
 
 
-def gen_gmap(col: pd.Series) -> pd.Series:
-    counts = col.value_counts()
+def gen_gmap(row: pd.Series) -> pd.Series:
+    """
+    Map a row of values to a row of colours
+    Colours are single numbers corresponding to (0, 0, X) in RGB (i.e. shades of blue)
+    Values that appear repeatedly are coloured
+    Unique values are marked as -10 and ignored when styling the dataframe (remain uncoloured)
+    @param row: pd.Series (row of df)
+    @return:
+    """
+    counts = row.value_counts()
     to_highlight = counts[counts > 1]
     no_highlight = counts[counts == 1]
     colour_vals = np.linspace(0, 1, len(to_highlight) + 2)[1:-1]
     mapping = {k: v for k, v in zip(to_highlight.index, colour_vals)}
     for val in no_highlight.index:
-        mapping[val] = -10
-    return col.map(mapping, na_action='ignore')
-
-
-def br_space(s):
-    """
-    Replace latex formatted $ with full width ＄ (U+FF04)
-    Add line break and trailing space
-    @param s: re.group
-    @return: str
-    """
-    return f"<br>{s.group().replace('$','＄')} "
+        mapping[val] = None
+    return row.map(mapping, na_action='ignore')
 
 
 def new_line(s):
     """
-    Replace latex formatted $ with full width ＄ (U+FF04)
-    Add line break and trailing space
+    Add line break before group and 2 trailing spaces
     @param s: re.group
     @return: str
     """
-    return f"\n {s.group()}  "
+    return f"\n {s.group()} "
 
 
-def style_marc_df(marc_df: pd.DataFrame, highlight_common_vals: bool, existing_selected_match: int) -> Styler:
-    styled_df = marc_df.transform(lambda x: x.str.replace(r"\$\w", br_space, regex=True)).style
+def gen_js(colour_mapping: Dict[str, str] = None) -> Union[Dict[str, str], JsCode]:
+    """
+    Generate a string that can be parsed by AG-Grid as a JS fn
+    @param colour_mapping: Dict[str, str]
+    @return: Dict[str, str]|streamlit-aggrid.JsCode
+    """
+
+    if not colour_mapping:
+        return {'wordBreak': 'normal', 'whiteSpace': 'pre'}
+
+    elif len(colour_mapping) == 1:
+        for val, colour in colour_mapping.items():
+            js_str = f"""
+            function(params) {{
+                 if (params.value === '{val}') {{
+                    return {{'backgroundColor': '{colour}', 'wordBreak': 'normal', 'whiteSpace': 'pre'}}
+                 }} else {{ 
+                    return {{'wordBreak': 'normal', 'whiteSpace': 'pre'}}
+                 }}
+                }} 
+            """
+            return JsCode(js_str)
+
+    elif len(colour_mapping) > 1:
+        vals, colours = list(colour_mapping.keys()), list(colour_mapping.values())
+        vals = [v.encode("unicode-escape").decode("utf-8") for v in vals]
+        elif_conditions = []
+        for v, c in zip(vals[1:], colours[1:]):
+            js_str_part = f"""
+            else if (params.value === '{v}') {{
+            return {{'backgroundColor': '{c}', 'wordBreak': 'normal', 'whiteSpace': 'pre'}}
+            }} """
+            elif_conditions.append(js_str_part)
+
+        js_str = f"""
+        function(params) {{
+             if (params.value === '{vals[0]}') {{
+                return {{'backgroundColor': '{colours[0]}', 'wordBreak': 'normal', 'whiteSpace': 'pre'}}
+             }} {"".join(elif_conditions)} else {{ 
+                return {{'wordBreak': 'normal', 'whiteSpace': 'pre'}}
+             }}
+            }} 
+        """
+        return JsCode(js_str)
+
+
+def to_hex_colour(blue_val):
+    """
+    Use mpl "Blues" colourmap to convert [0,1] to hex blues
+    @param blue_val:
+    @return:
+    """
+    if blue_val > 1:
+        blue_val = 1
+    cmap = colormaps["Blues"]
+    r, g, b, a = cmap(blue_val, bytes=True)
+    r_hex, g_hex, b_hex = hex(r)[2:], hex(g)[2:], hex(b)[2:]
+    return f"#{r_hex}{g_hex}{b_hex}"
+
+
+def gen_grid_options(df: pd.DataFrame, highlight_common_vals: bool, existing_match: int) -> Dict[str, str]:
+    """
+    Generate a dict to pass to gridOptions when calling AgGrid
+    Makes AgGrid aware of line breaks using cellStyle
+    Pins left two columns as index cols
+    Applies highlighting for common values across rows using gmap and a custom JS function
+    Highlights existing match using cellStyle
+    Equivalent to previous style_marc_df fn
+    @param df: pd.DataFrame
+    @param highlight_common_vals: bool
+    @param existing_match: int
+    @return: Dict[str, str]
+    """
+    grid_builder = GridOptionsBuilder.from_dataframe(df)
+
+    grid_builder.configure_columns(
+        df.columns[2:], **{"cellStyle": {'wordBreak': 'normal', 'whiteSpace': 'pre'}, "autoHeight": True})
+    grid_options = grid_builder.build()
+
+    grid_options['columnDefs'][0]["pinned"] = 'left'
+    grid_options['columnDefs'][1]["pinned"] = 'left'
+
     if highlight_common_vals:
-        gmap = marc_df.apply(gen_gmap, axis=1)
-        gmap[gmap.isna()] = -10
-        gmap[1::3] += 0.05
-        gmap[2::3] += 0.1
-        styled_df = styled_df.background_gradient(gmap=gmap, vmin=0, vmax=1, axis=None)
-    if existing_selected_match and existing_selected_match in marc_df.columns:
-        styled_df = styled_df.highlight_between(subset=[existing_selected_match], color="#2FD033A0")
-    return styled_df.set_properties(**{'text-align': 'left'})
+        gmap = df.iloc[:, 2:].apply(gen_gmap, axis=1)
+        gmap[1::3] += 0.03
+        gmap[2::3] += 0.06
+
+        for i, col_id in enumerate(gmap.columns):
+            colour_mapping = {
+                value: to_hex_colour(colour) for value, colour
+                in zip(df[col_id].values, gmap[col_id].values)
+                if colour and colour > -10
+            }
+            cell_style = gen_js(colour_mapping)
+            grid_options['columnDefs'][i + 2].update({'cellStyle': cell_style})
+
+    if existing_match and str(existing_match) in df.columns:
+        grid_options['columnDefs'][existing_match + 2].update(
+            {"cellStyle": {'wordBreak': 'normal', 'whiteSpace': 'pre', "backgroundColor": "#2FD033A0"}}
+        )
+
+    return grid_options
 
 
 def create_filter_columns(record_df: pd.DataFrame, lang_dict: Dict[str, str], search_au: str) -> pd.DataFrame:
@@ -309,8 +401,17 @@ def create_filter_columns(record_df: pd.DataFrame, lang_dict: Dict[str, str], se
     return record_df
 
 
-def update_marc_table(table, df, highlight_button, match_exists):
-    return table.dataframe(style_marc_df(df, highlight_button, match_exists))
+def update_marc_table(table, df, highlight_button, existing_match):
+    grid_options = gen_grid_options(
+        df=df, highlight_common_vals=highlight_button, existing_match=existing_match
+    )
+    with table:
+        ag = AgGrid(
+            data=df,
+            gridOptions=grid_options,
+            allow_unsafe_jscode=True
+        )
+    return ag
 
 
 def update_card_table(cards_df, subset, card_table_container):
@@ -328,8 +429,8 @@ def update_card_table(cards_df, subset, card_table_container):
 
 
 def update_and_push_to_s3(
-        local: bool, save_file: str, df:pd.DataFrame,
-        subset: List[str], container:st.container, s3: s3fs.S3FileSystem
+        local: bool, save_file: str, df: pd.DataFrame,
+        subset: List[str], container: st.container, s3: s3fs.S3FileSystem
 ) -> None:
     """
     Wrapper for updating and refreshing the cards_df and pushing data back to s3

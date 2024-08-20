@@ -4,11 +4,10 @@ Will need to prepare elsewhere then pull in as pickle or csv
 """
 import os
 import pickle
-from random import random
 
 import pandas as pd
 import streamlit as st
-from st_aggrid import AgGrid, GridOptionsBuilder
+from st_aggrid import AgGrid
 from PIL import Image
 import s3fs
 
@@ -65,7 +64,12 @@ else:
     readable_idx = int(select_event.selection["rows"][0]) + 1
 
 card_idx = cards_to_show.query("card_id == @readable_idx").index.values[0]
-MATCH_EXISTS = cards_to_show.loc[card_idx, "selected_match"]
+EXISTING_MATCH = cards_to_show.loc[card_idx, "selected_match"]
+if EXISTING_MATCH:
+    apparent_oclc_num = cards_to_show.loc[card_idx, "selected_match_ocn"]
+    actual_oclc_num = cards_to_show.loc[card_idx, "worldcat_matches"][EXISTING_MATCH].get_fields("001")[0].data
+    if apparent_oclc_num != actual_oclc_num:
+        st.warning("The recorded OCLC number of the selected match and its actual OCLC number do not match. Contact harry.lloyd@bl.uk to debug")
 
 cards_to_show["author"] = cards_df["author"].apply(lambda x: x if x else "")
 
@@ -98,11 +102,12 @@ all_marc_fields = sorted(list(set(match_df["record"].apply(lambda x: [y.tag for 
 all_languages = match_df["language"].unique()
 
 # Filters form
-_header, apply_filters_text = st.columns([0.01, 0.99])
-_header.header(body="", anchor="filters")
-apply_filters_text.write("Click 'Apply filters' at bottom of box to apply filters")
 with st.form("filters"):
-    max_to_display_col, removed_records_col = st.columns([0.3, 0.7])
+    apply_col, max_to_display_col, removed_records_col = st.columns([0.1, 0.2, 0.7])
+
+    apply_filters = apply_col.form_submit_button(
+        label="Apply filters"
+    )
 
     max_to_display_help = """
     Select the number of records to display in the MARC table above.  
@@ -188,9 +193,6 @@ with st.form("filters"):
     highlight_button = highlight_col.checkbox("Highlight common fields", value=True,
                                               help="Highlight field values that are common between two or more records.")
 
-    apply_filters = apply_col.form_submit_button(
-        label="Apply filters"
-    )
 
 if not lang_select:
     lang_select = all_languages
@@ -232,59 +234,75 @@ filtered_records_text = f"""
 ic_left.write(filtered_records_text)
 
 records_to_display = [x for x in match_ids if x not in records_to_ignore]
-marc_table_df = marc_table_all_recs_df.loc[:, records_to_display[:max_to_display]].dropna(how="all")
-marc_table.dataframe(st_utils.style_marc_df(marc_table_df, highlight_button, MATCH_EXISTS))
+marc_grid_df = marc_table_all_recs_df.loc[:, records_to_display[:max_to_display]].dropna(how="all")
+marc_grid_df = marc_grid_df.reset_index().transform(lambda x: x.str.replace(r"\$\w", st_utils.new_line, regex=True))
 
-str_cols = marc_table_df.reset_index().copy()
-str_cols.columns = [str(x) for x in str_cols.columns]
+marc_grid_df.columns = [str(x) for x in marc_grid_df.columns]
+grid_options = st_utils.gen_grid_options(df=marc_grid_df, highlight_common_vals=highlight_button, existing_match=EXISTING_MATCH)
 
-print(f"new run {random()}")
-grid_builder = GridOptionsBuilder.from_dataframe(str_cols)
-grid_builder.configure_columns(str_cols.columns[2:], **{"cellStyle":{'wordBreak':'normal', 'whiteSpace':'pre'}, "autoHeight": True})
-grid_options = grid_builder.build()
-grid_options['columnDefs'][0]["pinned"] = 'left'
-grid_options['columnDefs'][1]["pinned"] = 'left'
-
-ag = AgGrid(data=str_cols.transform(lambda x: x.str.replace(r"\$\w", st_utils.new_line, regex=True)), gridOptions=grid_options)
-ag.grid_options
-
-with st.form("record_selection"):
-    closest_result_col, editing_required_col, save_col = st.columns(3)
-    selected_match = closest_result_col.radio(
-        label="Which is the closest Worldcat result?",
-        options=(records_to_display[:max_to_display] + ["No correct results"])
-    )
-    needs_editing = editing_required_col.radio(
-        label="Does this record need manual editing or is it ready to ingest?",
-        options=[True, False],
-        format_func=lambda x: {True: "Manual editing", False: "Ready to ingest"}[x]
-    )
-    save_res = save_col.form_submit_button(
-        label="Save selection"
-    )
-    clear_res = save_col.form_submit_button(
-        label="Clear selection"
+with marc_table:
+    ag = AgGrid(
+        data=marc_grid_df,
+        gridOptions=grid_options,
+        allow_unsafe_jscode=True
     )
 
-    saving_text = save_col.empty()
+_, select_col, derive_col, _ = st.columns([0.15, 0.35, 0.35, 0.15])
+with select_col:
+    with st.form("record_selection"):
+        closest_result_col, save_col = st.columns([0.7, 0.3])
+        selected_match = closest_result_col.radio(
+            label="Which is the closest Worldcat result?",
+            options=(records_to_display[:max_to_display] + ["No correct results"])
+        )
 
-    if save_res:
-        if selected_match == "None of the results are correct":
-            cards_df.loc[card_idx, ["selected_match", "selected_match_ocn"]] = "No matches"
-        else:
-            cards_df.loc[card_idx, "selected_match"] = selected_match
-            cards_df.loc[card_idx, "selected_match_ocn"] = \
-                cards_df.loc[card_idx, "worldcat_matches"][selected_match].get_fields("001")[0].data
-            cards_df.loc[card_idx, "match_needs_editing"] = needs_editing
+        save_res = save_col.form_submit_button(
+            label="Save selection"
+        )
+        clear_res = save_col.form_submit_button(
+            label="Clear selection"
+        )
 
-        st_utils.update_and_push_to_s3(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, subset=subset,
-                                       container=card_table_container, s3=s3)
-        st_utils.update_marc_table(marc_table, marc_table_df, highlight_button, MATCH_EXISTS)
-        saving_text.markdown("### Selection saved!")
+        saving_text = save_col.empty()
 
-    if clear_res:
-        cards_df.loc[card_idx, ["selected_match", "selected_match_ocn", "match_needs_editing"]] = None
+        if save_res:
+            oclc_num = cards_df.loc[card_idx, "worldcat_matches"][selected_match].get_fields("001")[0].data
+            if selected_match == "None of the results are correct":
+                cards_df.loc[card_idx, ["selected_match", "selected_match_ocn"]] = "No matches"
+            else:
+                cards_df.loc[card_idx, "selected_match"] = selected_match
+                cards_df.loc[card_idx, "selected_match_ocn"] = oclc_num
 
-        st_utils.update_and_push_to_s3(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, subset=subset,
-                                       container=card_table_container, s3=s3)
-        saving_text.markdown("### Selection cleared!")
+            st_utils.update_and_push_to_s3(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, subset=subset,
+                                           container=card_table_container, s3=s3)
+            st_utils.update_marc_table(marc_table, marc_grid_df, highlight_button, EXISTING_MATCH)
+            st.success("Selection saved!", icon="✅")
+            sm_field = "094"
+            info_text = f"""
+            ➡️ Copy the OCLC Number to search in Record Manager    
+            ➡️ Copy the shelfmark to field {sm_field}
+            """
+            st.info(info_text)
+            oclc_label_col, oclc_num_col = st.columns([0.5,0.5])
+            sm_label_col, sm_col = st.columns([0.5, 0.5])
+            oclc_label_col.write("OCLC Number:")
+            oclc_num_col.code(oclc_num.strip('ocn').strip('ocm').strip('on'))
+            sm_label_col.write("Shelfmark:")
+            sm_col.code(sm)
+
+        if clear_res:
+            cards_df.loc[card_idx, ["selected_match", "selected_match_ocn", "match_needs_editing"]] = None
+
+            st_utils.update_and_push_to_s3(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, subset=subset,
+                                           container=card_table_container, s3=s3)
+            st.success("Selection cleared!", icon="✅")
+
+
+with derive_col:
+    with st.form("derive_complete"):
+        st.write("Click 'Derivation complete' if you have finished deriving the record for this card in Record Manager. This will mark it complete in the card table.")
+        record_manager_complete = st.form_submit_button(label="Derivation complete")
+        if record_manager_complete:
+            # cards_df.loc[card_idx, "record_manager_complete"] = True
+            # st.success("Derivation complete!", icon="✅")
+            pass
