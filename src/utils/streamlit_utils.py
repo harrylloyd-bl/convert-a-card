@@ -415,20 +415,26 @@ def update_marc_table(table, df, highlight_button, existing_match):
 
 
 def update_card_table(cards_df, subset, card_table_container):
-    cards_to_show = cards_df.dropna(subset="worldcat_matches")
+    cards_to_show = cards_df.dropna(subset="worldcat_matches").copy()
     cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
+    existing_matches = cards_to_show.dropna(subset="selected_match_ocn")
+    oclc_matches = existing_matches.query("selected_match_ocn != 'No match'").index.values
+    no_matches = existing_matches.query("selected_match_ocn == 'No match'").index.values
     card_table_container.dataframe(
-        cards_to_show.loc[:, subset],
+        cards_to_show.loc[:, subset].style.highlight_between(
+            subset=pd.IndexSlice[oclc_matches, :], color='#d6f5d6'
+        ).highlight_between(subset=pd.IndexSlice[no_matches, :], color='#edcd8c'),
         column_config={
             "card_id": "ID", "title": "Title", "author": "Author", "selected_match_ocn": "Selected OCLC #",
             "match_needs_editing": "Needs Editing", "shelfmark": "Shelfmark", "lines": "OCR"
         },
         hide_index=True,
+        on_select="rerun",
         selection_mode="single-row"
     )
 
 
-def update_and_push_to_s3(
+def update_and_push_to_storage(
         local: bool, save_file: str, df: pd.DataFrame,
         subset: List[str], container: st.container, s3: s3fs.S3FileSystem
 ) -> None:

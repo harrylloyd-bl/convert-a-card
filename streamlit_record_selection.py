@@ -42,13 +42,23 @@ cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) 
 st.write(f"Showing {len(cards_to_show)} cards with Worldcat results out of of {len(cards_df)} total cards, "
          f"omitting {nulls} without results.")
 
-st.write("Select a card using the column next to ID. Cards already matched are highlighted green.")
+st.write(
+    """
+    Select a card using the column next to ID. Cards already matched are highlighted green.
+    Cards where a user has decided no matches are appropriate are highlighted orange.
+    Sort by `Selected OCLC #` to show only unmatched cards, and avoid having to scroll as far after matching a card.
+    """
+)
 card_table_container = st.empty()
 
 subset = ["card_id", "title", "author", "selected_match_ocn", "match_needs_editing", "shelfmark", "lines"]
-existing_matches = cards_to_show.dropna(subset="selected_match_ocn").index.values
+existing_matches = cards_to_show.dropna(subset="selected_match_ocn")
+oclc_matches = existing_matches.query("selected_match_ocn != 'No match'").index.values
+no_matches = existing_matches.query("selected_match_ocn == 'No match'").index.values
 select_event = card_table_container.dataframe(
-    cards_to_show.loc[:, subset].style.highlight_between(subset=pd.IndexSlice[existing_matches,:], color='#d6f5d6'),
+    cards_to_show.loc[:, subset].style.highlight_between(
+        subset=pd.IndexSlice[oclc_matches,:], color='#d6f5d6'
+    ).highlight_between(subset=pd.IndexSlice[no_matches, :], color='#edcd8c'),
     column_config={
         "card_id": "ID", "title": "Title", "author": "Author", "selected_match_ocn": "Selected OCLC #",
         "match_needs_editing": "Needs Editing", "shelfmark": "Shelfmark", "lines": "OCR"
@@ -65,6 +75,8 @@ else:
 
 card_idx = cards_to_show.query("card_id == @readable_idx").index.values[0]
 EXISTING_MATCH = cards_to_show.loc[card_idx, "selected_match"]
+if EXISTING_MATCH == "No match":
+    EXISTING_MATCH = False
 if EXISTING_MATCH:
     apparent_oclc_num = cards_to_show.loc[card_idx, "selected_match_ocn"]
     actual_oclc_num = cards_to_show.loc[card_idx, "worldcat_matches"][EXISTING_MATCH].get_fields("001")[0].data
@@ -91,8 +103,8 @@ sm_correction = ic_left.text_input(label=f"The extracted shelfmark is {sm}. If i
 if sm != sm_correction:
     ic_left.markdown(f":green[Shelfmark updated]")
     cards_df.loc[card_idx, 'shelfmark'] = sm_correction
-    st_utils.update_and_push_to_s3(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, subset=subset,
-                                   container=card_table_container, s3=s3)
+    st_utils.update_and_push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, subset=subset,
+                                        container=card_table_container, s3=s3)
 
 marc_table = st.empty()
 check = list(cards_to_show.loc[card_idx, "worldcat_matches"])
@@ -251,9 +263,10 @@ _, select_col, derive_col, _ = st.columns([0.15, 0.35, 0.35, 0.15])
 with select_col:
     with st.form("record_selection"):
         closest_result_col, save_col = st.columns([0.7, 0.3])
+        no_correct_text = "No correct results"
         selected_match = closest_result_col.radio(
             label="Which is the closest Worldcat result?",
-            options=(records_to_display[:max_to_display] + ["No correct results"])
+            options=(records_to_display[:max_to_display] + [no_correct_text])
         )
 
         save_res = save_col.form_submit_button(
@@ -266,37 +279,39 @@ with select_col:
         saving_text = save_col.empty()
 
         if save_res:
-            oclc_num = cards_df.loc[card_idx, "worldcat_matches"][selected_match].get_fields("001")[0].data
-            if selected_match == "None of the results are correct":
-                cards_df.loc[card_idx, ["selected_match", "selected_match_ocn"]] = "No matches"
+            if selected_match == no_correct_text:
+                cards_df.loc[card_idx, ["selected_match", "selected_match_ocn"]] = "No match"
+                st.success("Non-match recorded!", icon="✅")
+                st_utils.update_and_push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, subset=subset,
+                                                    container=card_table_container, s3=s3)
             else:
+                oclc_num = cards_df.loc[card_idx, "worldcat_matches"][selected_match].get_fields("001")[0].data
                 cards_df.loc[card_idx, "selected_match"] = selected_match
                 cards_df.loc[card_idx, "selected_match_ocn"] = oclc_num
 
-            st_utils.update_and_push_to_s3(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, subset=subset,
-                                           container=card_table_container, s3=s3)
-            st_utils.update_marc_table(marc_table, marc_grid_df, highlight_button, EXISTING_MATCH)
-            st.success("Selection saved!", icon="✅")
-            sm_field = "094"
-            info_text = f"""
-            ➡️ Copy the OCLC Number to search in Record Manager    
-            ➡️ Copy the shelfmark to field {sm_field}
-            """
-            st.info(info_text)
-            oclc_label_col, oclc_num_col = st.columns([0.5,0.5])
-            sm_label_col, sm_col = st.columns([0.5, 0.5])
-            oclc_label_col.write("OCLC Number:")
-            oclc_num_col.code(oclc_num.strip('ocn').strip('ocm').strip('on'))
-            sm_label_col.write("Shelfmark:")
-            sm_col.code(sm)
+                st_utils.update_and_push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, subset=subset,
+                                                    container=card_table_container, s3=s3)
+                st_utils.update_marc_table(marc_table, marc_grid_df, highlight_button, EXISTING_MATCH)
+                st.success("Selection saved!", icon="✅")
+                sm_field = "094"
+                info_text = f"""
+                ➡️ Copy the OCLC Number to search in Record Manager    
+                ➡️ Copy the shelfmark to field {sm_field}
+                """
+                st.info(info_text)
+                oclc_label_col, oclc_num_col = st.columns([0.5,0.5])
+                sm_label_col, sm_col = st.columns([0.5, 0.5])
+                oclc_label_col.write("OCLC Number:")
+                oclc_num_col.code(oclc_num.strip('ocn').strip('ocm').strip('on'))
+                sm_label_col.write("Shelfmark:")
+                sm_col.code(sm)
 
         if clear_res:
             cards_df.loc[card_idx, ["selected_match", "selected_match_ocn", "match_needs_editing"]] = None
 
-            st_utils.update_and_push_to_s3(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, subset=subset,
-                                           container=card_table_container, s3=s3)
+            st_utils.update_and_push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, subset=subset,
+                                                container=card_table_container, s3=s3)
             st.success("Selection cleared!", icon="✅")
-
 
 with derive_col:
     with st.form("derive_complete"):
