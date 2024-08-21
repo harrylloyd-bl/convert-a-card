@@ -1,5 +1,5 @@
 # Convert-a-card Web App
-This app helps curators and cataloguers to choose between OCLC Worldcat matches for the title and author (if available) on a catalogue card. The search on title/author isn’t done live, OCLC Worldcat is queried separately then matches are loaded into the app. All editions are returned, but the search is pre-filtered to include only physical versions of the work. All electronic formats are excluded.
+This app helps curators and cataloguers to choose between OCLC Worldcat matches for the title and author (if available) or ISBN on a catalogue card. The search on title/author/ISBN is done as part of separate process to identify potential matches, which are then uploaded into the app for review. The search is pre-filtered to include only physical versions of the work - all electronic formats are excluded.
 ## Using the app
 ### Selecting a card
 Use the number entry box to select a card to match from the card table at the top of the page. The card table shows the card id column to select from, titles, authors, shelfmarks, and whether the card has already been matched. You can expand the table, search, and download it as csv by hovering over the table and using the icons in the toolbar that appear in the top right of the table. Once you’ve selected a card, it will display below the table.
