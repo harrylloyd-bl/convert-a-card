@@ -402,6 +402,14 @@ def create_filter_columns(record_df: pd.DataFrame, lang_dict: Dict[str, str], se
 
 
 def update_marc_table(table, df, highlight_button, existing_match):
+    """
+    Update the MARC table following
+    @param table:
+    @param df:
+    @param highlight_button:
+    @param existing_match:
+    @return:
+    """
     grid_options = gen_grid_options(
         df=df, highlight_common_vals=highlight_button, existing_match=existing_match
     )
@@ -414,14 +422,20 @@ def update_marc_table(table, df, highlight_button, existing_match):
     return ag
 
 
-def update_card_table(cards_df, subset, card_table_container):
-    cards_to_show = cards_df.dropna(subset="worldcat_matches").copy()
-    cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
-    existing_matches = cards_to_show.dropna(subset="selected_match_ocn")
+def update_card_table(df: pd.DataFrame, subset: List[str], container: st.container) -> st.dataframe:
+    """
+    Update the card table at the top of the app
+    This covers initial loading and updating once a record has been matched
+    @param df: pd.DataFrame
+    @param subset: List[str]
+    @param container: st.container
+    @return: st.dataframe
+    """
+    existing_matches = df.dropna(subset="selected_match_ocn")
     oclc_matches = existing_matches.query("selected_match_ocn != 'No match'").index.values
     no_matches = existing_matches.query("selected_match_ocn == 'No match'").index.values
-    card_table_container.dataframe(
-        cards_to_show.loc[:, subset].style.highlight_between(
+    select_event = container.dataframe(
+        df.loc[:, subset].style.highlight_between(
             subset=pd.IndexSlice[oclc_matches, :], color='#d6f5d6'
         ).highlight_between(subset=pd.IndexSlice[no_matches, :], color='#edcd8c'),
         column_config={
@@ -433,11 +447,10 @@ def update_card_table(cards_df, subset, card_table_container):
         selection_mode="single-row"
     )
 
+    return select_event
 
-def update_and_push_to_storage(
-        local: bool, save_file: str, df: pd.DataFrame,
-        subset: List[str], container: st.container, s3: s3fs.S3FileSystem
-) -> None:
+
+def push_to_storage(local: bool, save_file: str, df: pd.DataFrame, s3: s3fs.S3FileSystem) -> None:
     """
     Wrapper for updating and refreshing the cards_df and pushing data back to s3
     @param local: bool
@@ -454,7 +467,5 @@ def update_and_push_to_storage(
         with s3.open(save_file, 'wb') as f:
             pickle.dump(df, f)
             st.cache_data.clear()  # Needed if pulling from S3
-
-    update_card_table(df, subset, container)
 
     return None
