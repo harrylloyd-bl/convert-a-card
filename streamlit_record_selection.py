@@ -38,7 +38,7 @@ number_of_cards_container = st.empty()
 card_table_instructions = st.empty()
 card_table_container = st.empty()
 
-subset = ["card_id", "title", "author", "selected_match_ocn", "match_needs_editing", "shelfmark", "lines"]
+subset = ["card_id", "title", "author", "selected_match_ocn", "derivation_complete", "shelfmark", "lines"]
 cards_to_show = cards_df.dropna(subset="worldcat_matches").copy()
 cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
 
@@ -58,10 +58,10 @@ card_table_instructions.write(
     """
 )
 
-if not select_event.selection["rows"]:
+if not select_event["selection"]["rows"]:
     readable_idx = 1
 else:
-    readable_idx = int(select_event.selection["rows"][0]) + 1
+    readable_idx = int(select_event["selection"]["rows"][0]) + 1
 
 card_idx = cards_to_show.query("card_id == @readable_idx").index.values[0]
 EXISTING_MATCH = cards_to_show.loc[card_idx, "selected_match"]
@@ -87,7 +87,7 @@ search_ti = cards_to_show.loc[card_idx, 'title'].replace(' ', '+')
 search_au = cards_to_show.loc[card_idx, 'author'].replace(' ', '+')
 search_term = f"https://www.worldcat.org/search?q=ti%3A{search_ti}+AND+au%3A{search_au}"
 
-ic_left, ic_centred, ic_right = st.columns([0.3, 0.6, 0.1])
+ic_left, ic_centred = st.columns([0.3, 0.7])
 ic_centred.image(Image.open(card_jpg_path), use_column_width=True)
 label_text = f"""You can check the [Worldcat search]({search_term}) for this card"""
 ic_left.write(label_text)
@@ -100,6 +100,31 @@ if sm != sm_correction:
     cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
     st_utils.update_card_table(df=cards_to_show, subset=subset, container=card_table_container)
     st_utils.push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, s3=s3)
+
+filtered_records_empty = ic_left.empty()
+
+min_cat_help_text = """
+Minimal cataloguing view shows only:  
+100 - Author  
+245 - Title  
+260 - Publication info  
+300s - Physical description  
+600s - Subject Access  
+880s - Original script representation
+
+In full cataloguing view the following are excluded:  
+063 - NLM classification number [Obsolete]  
+064 - [Obsolete]  
+068 - [Obsolete]  
+072 - Subject category code  
+078 - [Obsolete]  
+079 - [Obsolete]  
+250 - Edition statement  
+776 - Additional physical forms  
+
+These were agreed with the Chinese cataloguing/curatorial team but can be changed. 
+"""
+minimal_cataloguing_view = ic_left.toggle("Minimal cataloguing view", value=True, help=min_cat_help_text)
 
 marc_table = st.empty()
 check = list(cards_to_show.loc[card_idx, "worldcat_matches"])
@@ -239,13 +264,21 @@ filtered_records_text = f"""
 {len(match_df) - len(match_ids)} removed by filters.  
 {len(records_to_ignore)} incorrect {record} removed by user.
 """
-ic_left.write(filtered_records_text)
+filtered_records_empty.write(filtered_records_text)
 
 records_to_display = [x for x in match_ids if x not in records_to_ignore]
-marc_grid_df = marc_table_all_recs_df.loc[:, records_to_display[:max_to_display]].dropna(how="all")
-marc_grid_df = marc_grid_df.reset_index().transform(lambda x: x.str.replace(r"\$\w", st_utils.new_line, regex=True))
+excluded_fields = ["063", "064", "068", "072", "078", "079", "250", "776"]
+useful_fields = ~marc_table_all_recs_df.index.droplevel(1).isin(excluded_fields)
+marc_grid_df = marc_table_all_recs_df.loc[useful_fields, records_to_display[:max_to_display]].dropna(how="all")
 
+minimal_repeat_fields = [x for x in marc_grid_df.index.droplevel(1) if x[0] in ["3", "6"]]
+minimal_fields = minimal_repeat_fields + ["100", "245", "260", "880"]  # 100, 245, 260, 300s, 600s, 880s
+if minimal_cataloguing_view:
+    marc_grid_df = marc_grid_df.loc[marc_grid_df.index.droplevel(1).isin(minimal_fields)]
+marc_grid_df = marc_grid_df.reset_index().transform(lambda x: x.str.replace(r"\$\w", st_utils.new_line, regex=True))
 marc_grid_df.columns = [str(x) for x in marc_grid_df.columns]
+
+
 st_utils.update_marc_table(marc_table, marc_grid_df, highlight_button, EXISTING_MATCH)
 
 _, select_col, derive_col, _ = st.columns([0.15, 0.35, 0.35, 0.15])
@@ -305,7 +338,10 @@ with select_col:
                 ocr_text_col.code("\n".join(cards_df.loc[card_idx, "lines"]))
 
         if clear_res:
-            cards_df.loc[card_idx, ["selected_match", "selected_match_ocn", "match_needs_editing"]] = None
+            cards_df.loc[card_idx, ["selected_match", "selected_match_ocn", "derivation_complete"]] = None
+            cards_to_show = cards_df.dropna(subset="worldcat_matches").copy()
+            cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
+            st_utils.update_card_table(cards_to_show, subset, card_table_container)
             st_utils.push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, s3=s3)
             st.success("Selection cleared!", icon="✅")
 
@@ -313,8 +349,20 @@ with derive_col:
     with st.form("derive_complete"):
         st.write("Click 'Derivation complete' if you have finished deriving the record for this card in Record Manager. "
                  "This will mark it complete in the card table.")
-        record_manager_complete = st.form_submit_button(label="Derivation complete")
-        if record_manager_complete:
-            # cards_df.loc[card_idx, "record_manager_complete"] = True
-            # st.success("Derivation complete!", icon="✅")
-            pass
+        derivation_complete = st.form_submit_button(label="Derivation complete")
+        if derivation_complete:
+            cards_df.loc[card_idx, "derivation_complete"] = True
+            cards_to_show = cards_df.dropna(subset="worldcat_matches").copy()
+            cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
+            st_utils.update_card_table(cards_to_show, subset, card_table_container)
+            st_utils.push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, s3=s3)
+            st.success("Derivation complete!", icon="✅")
+
+        mark_uncomplete = st.form_submit_button(label="Undo derivation complete")
+        if mark_uncomplete:
+            cards_df.loc[card_idx, "derivation_complete"] = None
+            cards_to_show = cards_df.dropna(subset="worldcat_matches").copy()
+            cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
+            st_utils.update_card_table(cards_to_show, subset, card_table_container)
+            st_utils.push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, s3=s3)
+            st.success("Derivation cleared!", icon="✅")

@@ -242,11 +242,11 @@ def gen_gmap(row: pd.Series) -> pd.Series:
 
 def new_line(s):
     """
-    Add line break before group and 2 trailing spaces
+    Add line break before group and 1 trailing spaces
     @param s: re.group
     @return: str
     """
-    return f"\n {s.group()} "
+    return f"\n{s.group()} "
 
 
 def gen_js(colour_mapping: Dict[str, str] = None) -> Union[Dict[str, str], JsCode]:
@@ -440,7 +440,7 @@ def update_card_table(df: pd.DataFrame, subset: List[str], container: st.contain
         ).highlight_between(subset=pd.IndexSlice[no_matches, :], color='#edcd8c'),
         column_config={
             "card_id": "ID", "title": "Title", "author": "Author", "selected_match_ocn": "Selected OCLC #",
-            "match_needs_editing": "Needs Editing", "shelfmark": "Shelfmark", "lines": "OCR"
+            "derivation_complete": "Derivation complete", "shelfmark": "Shelfmark", "lines": "OCR"
         },
         hide_index=True,
         on_select="rerun",
