@@ -18,4 +18,5 @@ dependencies:
   - openssl
   - pip:
       - pymarc==5.1.2
+      - streamlit-aggrid
 prefix: C:\Users\HLloyd\AppData\Local\mambaforge\envs\cac
