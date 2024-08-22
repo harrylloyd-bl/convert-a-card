@@ -296,10 +296,13 @@ with select_col:
                 st.info(info_text)
                 oclc_label_col, oclc_num_col = st.columns([0.5, 0.5])
                 sm_label_col, sm_col = st.columns([0.5, 0.5])
+                ocr_text_label, ocr_text_col = st.columns([0.5, 0.5])
                 oclc_label_col.write("OCLC Number:")
                 oclc_num_col.code(oclc_num.strip('ocn').strip('ocm').strip('on'))
                 sm_label_col.write("Shelfmark:")
                 sm_col.code(sm)
+                ocr_text_label.write("OCR text for 500 field:")
+                ocr_text_col.code("\n".join(cards_df.loc[card_idx, "lines"]))
 
         if clear_res:
             cards_df.loc[card_idx, ["selected_match", "selected_match_ocn", "match_needs_editing"]] = None
