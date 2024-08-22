@@ -258,7 +258,7 @@ with select_col:
             options=(records_to_display[:max_to_display] + [no_correct_text])
         )
 
-        save_col.write("Choosing a result will show shelfmark and OCLC number for Record Manager")
+        save_col.write("Saving will show the shelfmark and OCLC number for Record Manager. See sidebar for more info on Record Manager.")
         save_res = save_col.form_submit_button(
             label="Save selection"
         )
