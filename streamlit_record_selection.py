@@ -15,7 +15,7 @@ from src.utils import streamlit_utils as st_utils
 
 st.set_page_config(layout="wide")
 
-LOCAL_DATA = True
+LOCAL_DATA = False
 s3 = s3fs.S3FileSystem(anon=False)
 
 st.title("Worldcat results for searches for catalogue card title/author")
