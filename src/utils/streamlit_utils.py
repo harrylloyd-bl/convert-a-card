@@ -13,8 +13,8 @@ from pymarc import Record
 
 
 @st.cache_data
-def load_s3(s3: s3fs.S3FileSystem, s3_path: str):
-    with s3.open(s3_path, 'rb') as f:
+def load_s3(_s3: s3fs.S3FileSystem, s3_path: str):
+    with _s3.open(s3_path, 'rb') as f:
         df = pickle.load(f)
     return df
 
