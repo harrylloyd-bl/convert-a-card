@@ -1,10 +1,22 @@
+import pickle
 import re
 from typing import Dict, List, Union
 
+from matplotlib import colormaps
 import numpy as np
 import pandas as pd
+from pandas.io.formats.style import Styler
 import streamlit as st
+from st_aggrid import GridOptionsBuilder, JsCode, AgGrid
+import s3fs
 from pymarc import Record
+
+
+@st.cache_data
+def load_s3(_s3: s3fs.S3FileSystem, s3_path: str):
+    with _s3.open(s3_path, 'rb') as f:
+        df = pickle.load(f)
+    return df
 
 
 def get_pub_date(record: Record) -> int:
@@ -32,11 +44,11 @@ def get_008_date(record: Record) -> str:
     """
     f008 = record.get_fields("008")[0].data
     date_type = f008[6]
-    map = {
+    date_map = {
         's': slice(7, 11), 'r': slice(7, 11), 'q': slice(7, 15), 'n': slice(0, 0), 'm': slice(7, 15),
         'c': slice(7, 15), 't': slice(7, 11), 'd': slice(7, 15), 'e': slice(7, 11), 'i': slice(7, 15)
     }
-    return f008[map[date_type]]
+    return f008[date_map[date_type]]
 
 
 def pretty_filter_option(option: str) -> str:
@@ -84,16 +96,17 @@ def gen_unique_idx(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_subfield_rpt(df, field, split_chr, split_idx):
     repeat_id = [str(x) for x in range(len(df.loc[field:field]))]
-    if repeat_id == ["0"]: #TODO not assinging the subfield correctly for fields with only one repeat
+    if repeat_id == ["0"]:  # TODO not assinging the subfield correctly for fields with only one repeat
         df.loc[field, "Subfield":"Subfield"] = df.loc[field, df.columns[0]:df.columns[0]].str.split(split_chr).transform(lambda x: x[split_idx])
     else:
         df.loc[field, "Subfield":"Subfield"] = df.loc[field, df.columns[0]].str.split(split_chr).transform(lambda x: x[split_idx])
     df.loc[field, "Rpt":"Rpt"] = repeat_id
 
+
 def gen_sf_rpt_unique_idx(df: pd.DataFrame) -> pd.DataFrame:
     """
     Generate a unique index from one that contains repeated fields
-    @param out_df: pd.DataFrame
+    @param df: pd.DataFrame
     @return: pd.DataFrame
     """
     out_df = df.copy()
@@ -166,7 +179,7 @@ def simplify_6xx(df: pd.DataFrame) -> pd.DataFrame:
         replacement_df = replacement_df.set_index(["Field", "Subfield"], append=True).reorder_levels([1, 2, 0])
         if not replacement_df.reset_index(drop=True).equals(sf_orig.reset_index(drop=True)):
             tidy_df.loc[("650", sf), :] = replacement_df
-        else: # No overlapping terms so flatten naively
+        else:  # No overlapping terms so flatten naively
             sf_orig_blank_idx = sf_orig.reset_index(drop=True)
             blank_idx_df = sf_orig.reset_index().drop(columns=sf_orig.columns)
             for x in sf_orig_blank_idx.columns:
@@ -192,7 +205,8 @@ def filter_on_generic_fields(
     @param marc_df:
     @param fields:
     @param terms:
-    @return:
+    @param include_recs_without_field: bool
+    @return: pd.DataFrame
     """
     if not fields or not terms:
         return marc_df
@@ -207,28 +221,136 @@ def filter_on_generic_fields(
     return marc_df.T[df_filter].T
 
 
-def gen_gmap(col: pd.Series) -> pd.Series:
-    counts = col.value_counts()
+def gen_gmap(row: pd.Series) -> pd.Series:
+    """
+    Map a row of values to a row of colours
+    Colours are single numbers corresponding to (0, 0, X) in RGB (i.e. shades of blue)
+    Values that appear repeatedly are coloured
+    Unique values are marked as -10 and ignored when styling the dataframe (remain uncoloured)
+    @param row: pd.Series (row of df)
+    @return:
+    """
+    counts = row.value_counts()
     to_highlight = counts[counts > 1]
     no_highlight = counts[counts == 1]
     colour_vals = np.linspace(0, 1, len(to_highlight) + 2)[1:-1]
     mapping = {k: v for k, v in zip(to_highlight.index, colour_vals)}
     for val in no_highlight.index:
-        mapping[val] = -10
-    return col.map(mapping, na_action='ignore')
+        mapping[val] = None
+    return row.map(mapping, na_action='ignore')
 
 
-def style_marc_df(marc_df: pd.DataFrame, highlight_common_vals: bool, existing_selected_match: int) -> pd.DataFrame:
-    styled_df = marc_df.style
+def new_line(s):
+    """
+    Add line break before group and 1 trailing spaces
+    @param s: re.group
+    @return: str
+    """
+    return f"\n{s.group()} "
+
+
+def gen_js(colour_mapping: Dict[str, str] = None) -> Union[Dict[str, str], JsCode]:
+    """
+    Generate a string that can be parsed by AG-Grid as a JS fn
+    @param colour_mapping: Dict[str, str]
+    @return: Dict[str, str]|streamlit-aggrid.JsCode
+    """
+
+    if not colour_mapping:
+        return {'wordBreak': 'normal', 'whiteSpace': 'pre'}
+
+    elif len(colour_mapping) == 1:
+        for val, colour in colour_mapping.items():
+            js_str = f"""
+            function(params) {{
+                 if (params.value === '{val}') {{
+                    return {{'backgroundColor': '{colour}', 'wordBreak': 'normal', 'whiteSpace': 'pre'}}
+                 }} else {{ 
+                    return {{'wordBreak': 'normal', 'whiteSpace': 'pre'}}
+                 }}
+                }} 
+            """
+            return JsCode(js_str)
+
+    elif len(colour_mapping) > 1:
+        vals, colours = list(colour_mapping.keys()), list(colour_mapping.values())
+        vals = [v.encode("unicode-escape").decode("utf-8") for v in vals]
+        elif_conditions = []
+        for v, c in zip(vals[1:], colours[1:]):
+            js_str_part = f"""
+            else if (params.value === '{v}') {{
+            return {{'backgroundColor': '{c}', 'wordBreak': 'normal', 'whiteSpace': 'pre'}}
+            }} """
+            elif_conditions.append(js_str_part)
+
+        js_str = f"""
+        function(params) {{
+             if (params.value === '{vals[0]}') {{
+                return {{'backgroundColor': '{colours[0]}', 'wordBreak': 'normal', 'whiteSpace': 'pre'}}
+             }} {"".join(elif_conditions)} else {{ 
+                return {{'wordBreak': 'normal', 'whiteSpace': 'pre'}}
+             }}
+            }} 
+        """
+        return JsCode(js_str)
+
+
+def to_hex_colour(blue_val):
+    """
+    Use mpl "Blues" colourmap to convert [0,1] to hex blues
+    @param blue_val:
+    @return:
+    """
+    if blue_val > 1:
+        blue_val = 1
+    cmap = colormaps["Blues"]
+    r, g, b, a = cmap(blue_val, bytes=True)
+    r_hex, g_hex, b_hex = hex(r)[2:], hex(g)[2:], hex(b)[2:]
+    return f"#{r_hex}{g_hex}{b_hex}"
+
+
+def gen_grid_options(df: pd.DataFrame, highlight_common_vals: bool, existing_match: int) -> Dict[str, str]:
+    """
+    Generate a dict to pass to gridOptions when calling AgGrid
+    Makes AgGrid aware of line breaks using cellStyle
+    Pins left two columns as index cols
+    Applies highlighting for common values across rows using gmap and a custom JS function
+    Highlights existing match using cellStyle
+    Equivalent to previous style_marc_df fn
+    @param df: pd.DataFrame
+    @param highlight_common_vals: bool
+    @param existing_match: int
+    @return: Dict[str, str]
+    """
+    grid_builder = GridOptionsBuilder.from_dataframe(df)
+
+    grid_builder.configure_columns(
+        df.columns[2:], **{"cellStyle": {'wordBreak': 'normal', 'whiteSpace': 'pre'}, "autoHeight": True})
+    grid_options = grid_builder.build()
+
+    grid_options['columnDefs'][0]["pinned"] = 'left'
+    grid_options['columnDefs'][1]["pinned"] = 'left'
+
     if highlight_common_vals:
-        gmap = marc_df.apply(gen_gmap, axis=1)
-        gmap[gmap.isna()] = -10
-        gmap[1::3] += 0.05
-        gmap[2::3] += 0.1
-        styled_df = styled_df.background_gradient(gmap=gmap, vmin=0, vmax=1, axis=None)
-    if existing_selected_match and existing_selected_match in marc_df.columns:
-        styled_df = styled_df.highlight_between(subset=[existing_selected_match], color="#2FD033A0")
-    return styled_df
+        gmap = df.iloc[:, 2:].apply(gen_gmap, axis=1)
+        gmap[1::3] += 0.03
+        gmap[2::3] += 0.06
+
+        for i, col_id in enumerate(gmap.columns):
+            colour_mapping = {
+                value: to_hex_colour(colour) for value, colour
+                in zip(df[col_id].values, gmap[col_id].values)
+                if colour and colour > -10
+            }
+            cell_style = gen_js(colour_mapping)
+            grid_options['columnDefs'][i + 2].update({'cellStyle': cell_style})
+
+    if existing_match and str(existing_match) in df.columns:
+        grid_options['columnDefs'][existing_match + 2].update(
+            {"cellStyle": {'wordBreak': 'normal', 'whiteSpace': 'pre', "backgroundColor": "#2FD033A0"}}
+        )
+
+    return grid_options
 
 
 def create_filter_columns(record_df: pd.DataFrame, lang_dict: Dict[str, str], search_au: str) -> pd.DataFrame:
@@ -279,151 +401,71 @@ def create_filter_columns(record_df: pd.DataFrame, lang_dict: Dict[str, str], se
     return record_df
 
 
-def update_marc_table(table, df, highlight_button, match_exists):
-    return table.dataframe(style_marc_df(df, highlight_button, match_exists))
-
-
-# functions for an interactive selection column
-def insert_select_col(df):
-    cards_to_show_selections = df.copy()
-    cards_to_show_selections.insert(loc=1, column="select", value=False)
-    if st.session_state.get("selected_card"):
-        st.write(f"{st.session_state.get('selected_card')}, {type(st.session_state.get('selected_card'))}")
-        cards_to_show_selections.iloc[st.session_state.get("selected_card"), 1] = True
-    return cards_to_show_selections
-
-
-def create_editable_df(card_table_container, df, subset):
-    # https://docs.streamlit.io/knowledge-base/using-streamlit/how-to-get-row-selections
-    editable_df = card_table_container.data_editor(
-        df.loc[:, subset],
-        hide_index=True,
-        column_config={"select": st.column_config.CheckboxColumn(required=True)},
-        disabled=df.drop(columns="select").columns,
-        on_change=table_needs_refresh("card_table"),
-        # now that these are functions need to work out how to pass edited_df back as an arg - have to use st.session_state
-        key="card_table"
+def update_marc_table(table, df, highlight_button, existing_match):
+    """
+    Update the MARC table following
+    @param table:
+    @param df:
+    @param highlight_button:
+    @param existing_match:
+    @return:
+    """
+    grid_options = gen_grid_options(
+        df=df, highlight_common_vals=highlight_button, existing_match=existing_match
     )
-    st.write("after table declaration")
-    card_selection = editable_df[editable_df["select"]].drop("select", axis=1).index.to_list()
-
-    if 'selected_card' not in st.session_state:
-        st.session_state['selected_card'] = None
-
-    return editable_df, card_selection
-
-
-def update_card_table(cards_df, subset, card_table_container, fancy_select=False):
-    cards_to_show = cards_df.dropna(subset="worldcat_matches_subtyped")
-    cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
-    if not fancy_select:
-        card_table_container.dataframe(cards_to_show.loc[:, subset], hide_index=True)
-
-    else:
-        st.session_state.pop("card_table")
-        cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
-        cards_to_show_selections = cards_to_show.copy()
-        cards_to_show_selections.insert(loc=1, column="select", value=False)
-        if st.session_state["selected_card"]:
-            cards_to_show_selections.iloc[st.session_state["selected_card"], 1] = True
-        st.write("card_table_1")
-        card_table_container.data_editor(
-            cards_to_show_selections.loc[:, subset],
-            hide_index=True,
-            column_config={"select": st.column_config.CheckboxColumn(required=True)},
-            disabled=cards_to_show.columns,
-            on_change=table_needs_refresh("card_table_1"),
-            key="card_table_1"
+    with table:
+        ag = AgGrid(
+            data=df,
+            gridOptions=grid_options,
+            allow_unsafe_jscode=True
         )
+    return ag
 
 
-def table_needs_refresh(key, card_selection, editable_df):
-    # key is card_table, the key of the df this is the on_change fn for
-    st.write(f"key: {key}")
-    if "selected_card" not in st.session_state:
-        st.session_state["selected_card"] = None
-    if key not in st.session_state:
-        st.write("card_table not yet in session state")
-        return None
+def update_card_table(df: pd.DataFrame, subset: List[str], container: st.container) -> st.dataframe:
+    """
+    Update the card table at the top of the app
+    This covers initial loading and updating once a record has been matched
+    @param df: pd.DataFrame
+    @param subset: List[str]
+    @param container: st.container
+    @return: st.dataframe
+    """
+    existing_matches = df.dropna(subset="selected_match_ocn")
+    oclc_matches = existing_matches.query("selected_match_ocn != 'No match'").index.values
+    no_matches = existing_matches.query("selected_match_ocn == 'No match'").index.values
+    select_event = container.dataframe(
+        df.loc[:, subset].style.highlight_between(
+            subset=pd.IndexSlice[oclc_matches, :], color='#d6f5d6'
+        ).highlight_between(subset=pd.IndexSlice[no_matches, :], color='#edcd8c'),
+        column_config={
+            "card_id": "ID", "title": "Title", "author": "Author", "selected_match_ocn": "Selected OCLC #",
+            "derivation_complete": "Derivation complete", "shelfmark": "Shelfmark", "lines": "OCR"
+        },
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row"
+    )
 
-    # clear out any edited_rows that are False/empty so they don't affect len("edited_rows") calculations
-    st.write("total inc false: " + f"{len(st.session_state[key]['edited_rows'])}")
-    iter_copy = st.session_state[key]["edited_rows"].copy()
-    for k, v in iter_copy.items():
-        if not v["select"]:
-            st.session_state[key]["edited_rows"].pop(k)
-    st.write("total true: " + f"{len(st.session_state[key]['edited_rows'])}")
+    return select_event
 
-    st.write("refreshing table")
-    st.session_state[key]
 
-    if len(st.session_state[key]["edited_rows"]) == 0:
-        st.write("no edited rows")
+def push_to_storage(local: bool, save_file: str, df: pd.DataFrame, s3: s3fs.S3FileSystem) -> None:
+    """
+    Wrapper for updating and refreshing the cards_df and pushing data back to s3
+    @param local: bool
+    @param save_file: str
+    @param df: pd.DataFrame
+    @param subset: List[str]
+    @param container: st.container
+    @param s3: s3fs.S3FileSystem
+    @return: None
+    """
+    if local:
+        pickle.dump(df, open(save_file, "wb"))
+    else:
+        with s3.open(save_file, 'wb') as f:
+            pickle.dump(df, f)
+            st.cache_data.clear()  # Needed if pulling from S3
 
-    if len(st.session_state[key]["edited_rows"]) == 1:
-        st.session_state["selected_card"] = [int(x) for x in st.session_state[key]["edited_rows"].keys()][0]
-        st.session_state["selected_card"]
-        st.write("one edited rows")
-
-    if len(st.session_state[key]["edited_rows"]) == 2:
-        all_edited = [int(x) for x in st.session_state[key]["edited_rows"].keys()]
-        old_card = all_edited.pop(st.session_state["selected_card"])
-        new_card = all_edited[0]
-        st.write(new_card)
-        st.session_state["selected_card"] = new_card
-        st.session_state[key]["edited_rows"] = {f"{new_card}": {"select": True}}
-        st.write("updated state:")
-        st.session_state[key]
-        # update_card_table(card_table_container)
-        st.write("two edited rows")
-
-    if len(st.session_state[key]["edited_rows"]) > 2:  # too many cards clicked at once
-        all_edited = [int(x) for x in st.session_state[key]["edited_rows"].keys()]
-        old_card = all_edited.pop(st.session_state["selected_card"])
-        new_card = all_edited[0]  # pick the lowest idx of the ones the user has clicked, arbitrary choice
-        st.session_state["selected_card"] = new_card
-        st.session_state[key]["edited_rows"] = {f"{new_card}": {"select": True}}
-        st.write("more than 2 edited rows")
-
-    if st.session_state["selected_card"] == "hello":
-        if len(card_selection) == 0:
-            st.write("len = 0")
-            st.session_state["selected_card"] = None
-            st.write(st.session_state["selected_card"])
-            if st.session_state["stale"]:
-                st.write("stale")
-                # update_card_table(card_table_container)
-
-        elif len(card_selection) == 1:
-            st.write("len = 1")
-            st.write(card_selection)
-            st.session_state["selected_card"] = card_selection[-1]
-            if st.session_state["stale"]:
-                st.write("stale")
-                # update_card_table(card_table_container)
-
-        elif len(card_selection) == 2:
-            st.write("len = 2")
-            old_card = st.session_state["selected_card"]
-            st.write(f"old_card {old_card}")
-            st.write(card_selection)
-            selection = card_selection
-            selection.remove(old_card)
-            st.session_state["selected_card"] = selection[0]
-            # TODO fix references to editable_df - what should these be references to? function arg?
-            editable_df.loc[old_card, "select"] = False
-            st.write(editable_df[editable_df["select"]].drop("select", axis=1))
-            if st.session_state["stale"]:
-                st.write("stale")
-                # update_card_table(card_table_container)
-        #
-        # elif len(card_selection) > 2:  # someone's clicked too many cards, take the highest val one they've clicked
-        #     st.write("len > 2")
-        #     old_card = st.session_state["selected_card"]
-        #     all_selected = card_selection
-        #     all_selected.remove(old_card)
-        #     st.session_state["selected_card"] = all_selected[-1]
-        #     editable_df.loc[all_selected[:-1] + [old_card], "select"] = False
-        #     st.write(editable_df[editable_df["select"]].drop("select", axis=1))
-        #     if st.session_state["stale"]:
-        #         update_card_table()
+    return None
