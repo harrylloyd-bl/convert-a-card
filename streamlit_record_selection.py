@@ -12,6 +12,7 @@ import s3fs
 
 import cfg
 from src.utils import streamlit_utils as st_utils
+from src.docs import doc_strings as docs
 
 st.set_page_config(layout="wide")
 st.session_state["testing"] = st.session_state.get("testing", False)
@@ -51,13 +52,7 @@ number_of_cards_container.write(
     # f"out of of {len(cards_df)} total cards, omitting {nulls} without results."
 )
 
-card_table_instructions.write(
-    """
-    Select a card using the column next to ID. Cards already matched are highlighted green.
-    Cards where a user has decided no matches are appropriate are highlighted orange.
-    Sort by `Selected OCLC #` to show only unmatched cards, and avoid having to scroll as far after matching a card.
-    """
-)
+card_table_instructions.write(docs.card_table_instructions)
 
 if st.session_state["testing"]:  # Can't work out how to set a row select during testing
     st.session_state["readable_card_id"] = st.session_state.get("readable_card_id", 1)
@@ -75,10 +70,7 @@ if EXISTING_MATCH:
     apparent_oclc_num = cards_df.loc[card_idx, "selected_match_ocn"]
     actual_oclc_num = cards_df.loc[card_idx, "worldcat_matches"][EXISTING_MATCH].get_fields("001")[0].data
     if apparent_oclc_num != actual_oclc_num:
-        st.warning(
-            "The recorded OCLC number of the selected match and its actual OCLC number do not match."
-            "Contact harry.lloyd@bl.uk to debug"
-        )
+        st.warning(docs.oclc_num_warning)
 
 cards_df["author"] = cards_df["author"].apply(lambda x: x if x else "")
 
@@ -105,29 +97,7 @@ if sm != sm_correction:
 
 filtered_records_empty = ic_left.empty()
 
-min_cat_help_text = """
-Minimal cataloguing view shows only:  
-100 - Author  
-245 - Title  
-260 - Publication info  
-300s - Physical description  
-600s - Subject Access  
-880s - Original script representation
-
-In full cataloguing view the following are excluded:  
-063 - NLM classification number [Obsolete]  
-064 - [Obsolete]  
-068 - [Obsolete]  
-072 - Subject category code  
-078 - [Obsolete]  
-079 - [Obsolete]  
-250 - Edition statement  
-776 - Additional physical forms  
-
-These were agreed with the Chinese cataloguing/curatorial team but can be changed. 
-"""
-
-minimal_cataloguing_view = ic_left.toggle("Minimal cataloguing view", value=True, help=min_cat_help_text)
+minimal_cataloguing_view = ic_left.toggle("Minimal cataloguing view", value=True, help=docs.min_cat_help_text)
 
 marc_table = st.empty()
 match_df = pd.DataFrame({"record": list(cards_df.loc[card_idx, "worldcat_matches"])})
@@ -141,12 +111,9 @@ with st.form("filters"):
 
     apply_filters = apply_col.form_submit_button(label="Apply filters")
 
-    max_to_display_help = """
-    Select the number of records to display in the MARC table above.  
-    Setting this value very high can lead to lots of mostly blank rows to scroll through.
-    """
     max_to_display = int(
-        max_to_display_col.number_input("Max records to display", min_value=1, value=5, help=max_to_display_help))
+        max_to_display_col.number_input("Max records to display", min_value=1, value=5, help=docs.max_to_display_help)
+    )
 
     # It is possible to remove a previously selected record from the comparison
     records_to_ignore = removed_records_col.multiselect(
@@ -177,10 +144,7 @@ with st.form("filters"):
         label='Select publication year',
         options=pub_dates,
         value=(min(pub_dates), max(pub_dates)),
-        help=("Records with no publication date will remain included in the MARC table. "
-              "All records including records with no publication date are included by default"
-              "when the sliders are in their default end positions. "
-              "Publication year defined as a 4-digit number in 260$c")
+        help=(docs.date_select_help)
     )
 
     st.write("####")
@@ -192,11 +156,9 @@ with st.form("filters"):
     )
     search_terms = generic_field_contains_col.text_input(
         "MARC field contains",
-        help=("For multiple fields separate terms by a semi-colon. "
-              "e.g. if specifying fields 010, 300 then search term might be '2001627090; 140 pages'."
-              "Searching on a field with repeat fields searches all the repeat fields"
-              )
+        help=(docs.generic_field_search_help)
     )
+
     search_terms = search_terms.split(";")
     if search_terms == [""]:  # clear if no search terms
         search_terms = []
@@ -216,13 +178,10 @@ with st.form("filters"):
 
     sort_options_col, highlight_col = st.columns([0.65, 0.2], gap="large", vertical_alignment="center")
     sort_options = sort_options_col.multiselect(
-        label=(
-            "Select how to sort matching records."
-        ),
+        label=("Select how to sort matching records."),
         options=filter_options,
         format_func=st_utils.pretty_filter_option,
-        help=("The default is the order in which results are returned from Worldcat."
-              "If more than one option is selected results will be sorted sequentially in the order options have been selected.")
+        help=(docs.sort_options_help)
     )
 
     highlight_button = highlight_col.checkbox("Highlight common fields", value=True,
@@ -342,8 +301,7 @@ with select_col:
 
 with derive_col:
     with st.form("derive_complete"):
-        st.write("Click 'Derivation complete' if you have finished deriving the record for this card in Record Manager. "
-                 "This will mark it complete in the card table.")
+        st.write(docs.derivation_complete)
         derivation_complete = st.form_submit_button(label="Derivation complete")
         if derivation_complete:
             cards_df.loc[card_idx, "derivation_complete"] = True
