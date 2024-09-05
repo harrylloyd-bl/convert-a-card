@@ -1,27 +1,18 @@
-name: cac
+name: cac_np2
 channels:
   - conda-forge
 dependencies:
-  - beautifulsoup4=4.12.2
-  - ca-certificates=2024.8.30
-  - certifi=2024.8.30
-  - httpx=0.27.0
-  - lxml=4.9.3
-  - matplotlib=3.8.0
-  - numpy<2
-  - openssl=3.3.1
-  - pandas=2.1.0
-  - pillow=9.5.0
-  - pytest=7.4.2
-  - python-dotenv=1.0.0
-  - streamlit=1.37.1
-  - s3fs=2023.9.0
-  - pip=23.2.1
-  - pytest-xdist=3.6.1
-  - tqdm=4.66.1
+  - python=3.10
+  - pip
   - pip:
-      - bookops-worldcat==1.0.0
-      - ply==3.11
-      - pymarc==5.1.0
-      - streamlit-aggrid==1.0.5
+      - pymarc
+      - streamlit-aggrid
+      - numpy==2.*
+      - pandas
+      - pytest
+      - streamlit>=1.30
+      - python-dotenv
+      - pillow
+      - s3fs
+      - matplotlib
 prefix: C:\Users\HLloyd\AppData\Local\mambaforge\envs\cac
