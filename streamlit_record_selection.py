@@ -4,6 +4,7 @@ Will need to prepare elsewhere then pull in as pickle or csv
 """
 import os
 import pickle
+import platform
 
 import pandas as pd
 import streamlit as st
@@ -17,7 +18,11 @@ from src.docs import doc_strings as docs
 st.set_page_config(layout="wide")
 st.session_state["testing"] = st.session_state.get("testing", False)
 
-LOCAL_DATA = True
+if platform.system() == "Linux":  # community cloud runs linux
+    LOCAL_DATA = False
+elif platform.system() == "Windows":
+    LOCAL_DATA = True  # edit if want to trial remote data locally
+
 s3 = s3fs.S3FileSystem(anon=False)
 
 st.title("Worldcat results for searches for catalogue card title/author")
