@@ -4,6 +4,7 @@ Will need to prepare elsewhere then pull in as pickle or csv
 """
 import os
 import pickle
+import platform
 
 import pandas as pd
 import streamlit as st
@@ -12,10 +13,16 @@ import s3fs
 
 import cfg
 from src.utils import streamlit_utils as st_utils
+from src.docs import doc_strings as docs
 
 st.set_page_config(layout="wide")
+st.session_state["testing"] = st.session_state.get("testing", False)
 
-LOCAL_DATA = False
+if platform.system() == "Linux":  # community cloud runs linux
+    LOCAL_DATA = False
+elif platform.system() == "Windows":
+    LOCAL_DATA = True  # edit if want to trial remote data locally
+
 s3 = s3fs.S3FileSystem(anon=False)
 
 st.title("Worldcat results for searches for catalogue card title/author")
@@ -25,110 +32,80 @@ with open("sidebar_docs.txt", encoding="utf-8") as f:
 with st.sidebar:
     st.markdown(sidebar_docs_txt)
 
-if LOCAL_DATA:
-    SAVE_FILE = "data/processed/401_cards.p"
-    cards_df = pickle.load(open(SAVE_FILE, "rb"))
+if st.session_state["testing"]:
+    cards_df = st.session_state["cards_df"]
+    pass  # cards_df and save_file defined in tests
+elif LOCAL_DATA:
+    st.session_state["save_file"] = "data/processed/chinese_matches.p"
+    cards_df = pickle.load(open(st.session_state["save_file"], "rb"))
     st.write("Loaded cards info from local")
 else:
-    SAVE_FILE = 'cac-bucket/401_cards.p'
-    cards_df = st_utils.load_s3(s3, SAVE_FILE)
+    st.session_state["save_file"] = 'cac-bucket/chinese_matches.p'
+    cards_df = st_utils.load_s3(s3, st.session_state["save_file"])
     st.write("Loaded cards info from AWS")
 
 number_of_cards_container = st.empty()
 card_table_instructions = st.empty()
 card_table_container = st.empty()
+subset = ["simple_id", "title", "author", "selected_match_ocn", "derivation_complete", "shelfmark", "lines"]
 
-subset = ["card_id", "title", "author", "selected_match_ocn", "derivation_complete", "shelfmark", "lines"]
-cards_to_show = cards_df.dropna(subset="worldcat_matches").copy()
-cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
-
-select_event = st_utils.update_card_table(df=cards_to_show, subset=subset, container=card_table_container)
+card_selection = st_utils.update_card_table(df=cards_df, subset=subset, container=card_table_container)
 
 nulls = len(cards_df) - len(cards_df.dropna(subset="worldcat_matches"))
 number_of_cards_container.write(
-    f"Showing {len(cards_df.dropna(subset='worldcat_matches'))} cards with Worldcat results"
-    f"out of of {len(cards_df)} total cards, omitting {nulls} without results."
+    f"Showing {len(cards_df.dropna(subset='worldcat_matches'))} cards with Worldcat results."
+    # f"out of of {len(cards_df)} total cards, omitting {nulls} without results."
 )
 
-card_table_instructions.write(
-    """
-    Select a card using the column next to ID. Cards already matched are highlighted green.
-    Cards where a user has decided no matches are appropriate are highlighted orange.
-    Sort by `Selected OCLC #` to show only unmatched cards, and avoid having to scroll as far after matching a card.
-    """
-)
+card_table_instructions.write(docs.card_table_instructions)
 
-if not select_event["selection"]["rows"]:
-    readable_idx = 1
+if st.session_state["testing"]:  # Can't work out how to set a row select during testing
+    st.session_state["readable_card_id"] = st.session_state.get("readable_card_id", 1)
+elif not card_selection["selection"]["rows"]:
+    st.session_state["readable_card_id"] = 1
 else:
-    readable_idx = int(select_event["selection"]["rows"][0]) + 1
+    st.session_state["readable_card_id"] = int(card_selection["selection"]["rows"][0]) + 1
 
-card_idx = cards_to_show.query("card_id == @readable_idx").index.values[0]
-EXISTING_MATCH = cards_to_show.loc[card_idx, "selected_match"]
+card_idx = cards_df.query("simple_id == @st.session_state['readable_card_id']").index.values[0]
+st.session_state["card_idx"] = card_idx
+EXISTING_MATCH = cards_df.loc[card_idx, "selected_match"]
 if EXISTING_MATCH == "No match":
     EXISTING_MATCH = False
 if EXISTING_MATCH:
-    apparent_oclc_num = cards_to_show.loc[card_idx, "selected_match_ocn"]
-    actual_oclc_num = cards_to_show.loc[card_idx, "worldcat_matches"][EXISTING_MATCH].get_fields("001")[0].data
+    apparent_oclc_num = cards_df.loc[card_idx, "selected_match_ocn"]
+    actual_oclc_num = cards_df.loc[card_idx, "worldcat_matches"][EXISTING_MATCH].get_fields("001")[0].data
     if apparent_oclc_num != actual_oclc_num:
-        st.warning(
-            "The recorded OCLC number of the selected match and its actual OCLC number do not match."
-            "Contact harry.lloyd@bl.uk to debug"
-        )
+        st.warning(docs.oclc_num_warning)
 
-cards_to_show["author"] = cards_df["author"].apply(lambda x: x if x else "")
+cards_df["author"] = cards_df["author"].apply(lambda x: x if x else "")
 
 st.write("\n")
 st.subheader("Select from Worldcat results")
 
-card_jpg_path = os.path.join("data/raw/chinese/1016992", cards_to_show.loc[card_idx, "xml"][:-5] + ".jpg")
+card_jpg_path = os.path.join("data/raw/chinese/1016992", cards_df.loc[card_idx, "xml"][:-5] + ".jpg")
 
-search_ti = cards_to_show.loc[card_idx, 'title'].replace(' ', '+')
-search_au = cards_to_show.loc[card_idx, 'author'].replace(' ', '+')
+search_ti = cards_df.loc[card_idx, 'title'].replace(' ', '+')
+search_au = cards_df.loc[card_idx, 'author'].replace(' ', '+')
 search_term = f"https://www.worldcat.org/search?q=ti%3A{search_ti}+AND+au%3A{search_au}"
 
 ic_left, ic_centred = st.columns([0.3, 0.7])
 ic_centred.image(Image.open(card_jpg_path), use_column_width=True)
 label_text = f"""You can check the [Worldcat search]({search_term}) for this card"""
 ic_left.write(label_text)
-sm = cards_to_show.loc[card_idx, 'shelfmark']
+sm = cards_df.loc[card_idx, 'shelfmark']
 sm_correction = ic_left.text_input(label=f"The extracted shelfmark is {sm}. If incorrect change the value below and press enter.", value=sm)
 if sm != sm_correction:
     ic_left.markdown(f":green[Shelfmark updated]")
     cards_df.loc[card_idx, 'shelfmark'] = sm_correction
-    cards_to_show = cards_df.dropna(subset="worldcat_matches").copy()
-    cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
-    st_utils.update_card_table(df=cards_to_show, subset=subset, container=card_table_container)
-    st_utils.push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, s3=s3)
+    st_utils.update_card_table(df=cards_df, subset=subset, container=card_table_container)
+    st_utils.push_to_storage(local=LOCAL_DATA, save_file=st.session_state["save_file"], df=cards_df, s3=s3)
 
 filtered_records_empty = ic_left.empty()
 
-min_cat_help_text = """
-Minimal cataloguing view shows only:  
-100 - Author  
-245 - Title  
-260 - Publication info  
-300s - Physical description  
-600s - Subject Access  
-880s - Original script representation
-
-In full cataloguing view the following are excluded:  
-063 - NLM classification number [Obsolete]  
-064 - [Obsolete]  
-068 - [Obsolete]  
-072 - Subject category code  
-078 - [Obsolete]  
-079 - [Obsolete]  
-250 - Edition statement  
-776 - Additional physical forms  
-
-These were agreed with the Chinese cataloguing/curatorial team but can be changed. 
-"""
-minimal_cataloguing_view = ic_left.toggle("Minimal cataloguing view", value=True, help=min_cat_help_text)
+minimal_cataloguing_view = ic_left.toggle("Minimal cataloguing view", value=True, help=docs.min_cat_help_text)
 
 marc_table = st.empty()
-check = list(cards_to_show.loc[card_idx, "worldcat_matches"])
-match_df = pd.DataFrame({"record": list(cards_to_show.loc[card_idx, "worldcat_matches"])})
+match_df = pd.DataFrame({"record": list(cards_df.loc[card_idx, "worldcat_matches"])})
 match_df = st_utils.create_filter_columns(match_df, cfg.LANG_DICT, search_au)
 all_marc_fields = sorted(list(set(match_df["record"].apply(lambda x: [y.tag for y in x.get_fields()]).sum())))
 all_languages = match_df["language"].unique()
@@ -137,16 +114,11 @@ all_languages = match_df["language"].unique()
 with st.form("filters"):
     apply_col, max_to_display_col, removed_records_col = st.columns([0.1, 0.2, 0.7])
 
-    apply_filters = apply_col.form_submit_button(
-        label="Apply filters"
-    )
+    apply_filters = apply_col.form_submit_button(label="Apply filters")
 
-    max_to_display_help = """
-    Select the number of records to display in the MARC table above.  
-    Setting this value very high can lead to lots of mostly blank rows to scroll through.
-    """
     max_to_display = int(
-        max_to_display_col.number_input("Max records to display", min_value=1, value=5, help=max_to_display_help))
+        max_to_display_col.number_input("Max records to display", min_value=1, value=5, help=docs.max_to_display_help)
+    )
 
     # It is possible to remove a previously selected record from the comparison
     records_to_ignore = removed_records_col.multiselect(
@@ -177,14 +149,11 @@ with st.form("filters"):
         label='Select publication year',
         options=pub_dates,
         value=(min(pub_dates), max(pub_dates)),
-        help=("Records with no publication date will remain included in the MARC table. "
-              "All records including records with no publication date are included by default"
-              "when the sliders are in their default end positions. "
-              "Publication year defined as a 4-digit number in 260$c")
+        help=(docs.date_select_help)
     )
 
     st.write("####")
-    generic_field_col, generic_field_contains_col, include_recs_without_field_col = st.columns([0.3, 0.475, 0.225])
+    generic_field_col, generic_field_contains_col, _, include_recs_without_field_col = st.columns([0.26, 0.38, 0.033, 0.19], vertical_alignment="bottom")
     search_on_marc_fields = generic_field_col.multiselect(
         "Select MARC field",
         all_marc_fields,
@@ -192,13 +161,13 @@ with st.form("filters"):
     )
     search_terms = generic_field_contains_col.text_input(
         "MARC field contains",
-        help=("For multiple fields separate terms by a semi-colon. "
-              "e.g. if specifying fields 010, 300 then search term might be '2001627090; 140 pages'."
-              "Searching on a field with repeat fields searches all the repeat fields"
-              )
+        help=(docs.generic_field_search_help)
     )
+
     search_terms = search_terms.split(";")
-    if search_terms == [""]: search_terms = []
+    if search_terms == [""]:  # clear if no search terms
+        search_terms = []
+        search_on_marc_fields = []
     include_recs_without_field = include_recs_without_field_col.checkbox("Allow records without specified MARC fields")
 
     if len(search_on_marc_fields) != len(search_terms):
@@ -212,15 +181,12 @@ with st.form("filters"):
     filter_options = ["num_subject_access", "num_rda", "num_linked", "has_phys_desc", "good_encoding_level",
                       "record_length"]
 
-    sort_options_col, highlight_col, apply_col = st.columns([0.65, 0.2, 0.15])
+    sort_options_col, highlight_col = st.columns([0.65, 0.2], gap="large", vertical_alignment="center")
     sort_options = sort_options_col.multiselect(
-        label=(
-            "Select how to sort matching records."
-        ),
+        label=("Select how to sort matching records."),
         options=filter_options,
         format_func=st_utils.pretty_filter_option,
-        help=("The default is the order in which results are returned from Worldcat."
-              "If more than one option is selected results will be sorted sequentially in the order options have been selected.")
+        help=(docs.sort_options_help)
     )
 
     highlight_button = highlight_col.checkbox("Highlight common fields", value=True,
@@ -233,6 +199,7 @@ filter_query = "language in @lang_select" \
                "& ((@date_slider[0] <= publication_date and publication_date <= @date_slider[1])" \
                "or publication_date == -9999)"
 filtered_df = match_df.query(filter_query).copy()
+st.session_state["filtered_df"] = filtered_df
 sorted_filtered_df = filtered_df.sort_values(by=sort_options, ascending=False)
 
 formatted_records, fmt_new_idx = [], []
@@ -248,11 +215,13 @@ for i in range(len(sorted_filtered_df)):
     # fmt_new_idx.append(st_utils.gen_sf_rpt_unique_idx(col))
 
 marc_table_all_recs_df = pd.concat(formatted_records, axis=1).sort_index(key=st_utils.sort_fields_idx)
+st.session_state["marc_table_all_recs_df"] = marc_table_all_recs_df  # for testing
 # new_marc_table = pd.concat(fmt_new_idx, axis=1).sort_index()
 # st_utils.simplify_6xx(new_marc_table)
 
 marc_table_filtered_recs = st_utils.filter_on_generic_fields(marc_table_all_recs_df, search_on_marc_fields,
                                                              search_terms, include_recs_without_field)
+st.session_state["marc_table_filtered_recs"] = marc_table_filtered_recs  # for testing
 match_ids = marc_table_filtered_recs.columns.tolist()
 
 record = "records"
@@ -275,13 +244,15 @@ minimal_repeat_fields = [x for x in marc_grid_df.index.droplevel(1) if x[0] in [
 minimal_fields = minimal_repeat_fields + ["100", "245", "260", "880"]  # 100, 245, 260, 300s, 600s, 880s
 if minimal_cataloguing_view:
     marc_grid_df = marc_grid_df.loc[marc_grid_df.index.droplevel(1).isin(minimal_fields)]
+
 marc_grid_df = marc_grid_df.reset_index().transform(lambda x: x.str.replace(r"\$\w", st_utils.new_line, regex=True))
 marc_grid_df.columns = [str(x) for x in marc_grid_df.columns]
 
+# for testing
+st.session_state["marc_grid_df"] = marc_grid_df
+st.session_state["ag"] = st_utils.update_marc_table(marc_table, marc_grid_df, highlight_button, EXISTING_MATCH)
 
-st_utils.update_marc_table(marc_table, marc_grid_df, highlight_button, EXISTING_MATCH)
-
-_, select_col, derive_col, _ = st.columns([0.15, 0.35, 0.35, 0.15])
+select_col, derive_col = st.columns([0.35, 0.35], gap="large")
 with select_col:
     with st.form("record_selection"):
         closest_result_col, save_col = st.columns([0.6, 0.4])
@@ -292,32 +263,22 @@ with select_col:
         )
 
         save_col.write("Saving will show the shelfmark and OCLC number for Record Manager. See sidebar for more info on Record Manager.")
-        save_res = save_col.form_submit_button(
-            label="Save selection"
-        )
-        clear_res = save_col.form_submit_button(
-            label="Clear selection"
-        )
-
-        saving_text = save_col.empty()
+        save_res = save_col.form_submit_button(label="Save selection")
+        clear_res = save_col.form_submit_button(label="Clear selection")
 
         if save_res:
             if selected_match == no_correct_text:
                 cards_df.loc[card_idx, ["selected_match", "selected_match_ocn"]] = "No match"
                 st.success("Non-match recorded!", icon="✅")
-                cards_to_show = cards_df.dropna(subset="worldcat_matches").copy()
-                cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
-                st_utils.update_card_table(cards_to_show, subset, card_table_container)
-                st_utils.push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, s3=s3)
+                st_utils.update_card_table(cards_df, subset, card_table_container)
+                st_utils.push_to_storage(local=LOCAL_DATA, save_file=st.session_state["save_file"], df=cards_df, s3=s3)
             else:
                 oclc_num = cards_df.loc[card_idx, "worldcat_matches"][selected_match].get_fields("001")[0].data
                 cards_df.loc[card_idx, "selected_match"] = selected_match
                 cards_df.loc[card_idx, "selected_match_ocn"] = oclc_num
 
-                cards_to_show = cards_df.dropna(subset="worldcat_matches").copy()
-                cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
-                st_utils.update_card_table(cards_to_show, subset, card_table_container)
-                st_utils.push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, s3=s3)
+                st_utils.update_card_table(cards_df, subset, card_table_container)
+                st_utils.push_to_storage(local=LOCAL_DATA, save_file=st.session_state["save_file"], df=cards_df, s3=s3)
                 st_utils.update_marc_table(marc_table, marc_grid_df, highlight_button, EXISTING_MATCH)
                 st.success("Selection saved!", icon="✅")
 
@@ -339,30 +300,23 @@ with select_col:
 
         if clear_res:
             cards_df.loc[card_idx, ["selected_match", "selected_match_ocn", "derivation_complete"]] = None
-            cards_to_show = cards_df.dropna(subset="worldcat_matches").copy()
-            cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
-            st_utils.update_card_table(cards_to_show, subset, card_table_container)
-            st_utils.push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, s3=s3)
+            st_utils.update_card_table(cards_df, subset, card_table_container)
+            st_utils.push_to_storage(local=LOCAL_DATA, save_file=st.session_state["save_file"], df=cards_df, s3=s3)
             st.success("Selection cleared!", icon="✅")
 
 with derive_col:
     with st.form("derive_complete"):
-        st.write("Click 'Derivation complete' if you have finished deriving the record for this card in Record Manager. "
-                 "This will mark it complete in the card table.")
+        st.write(docs.derivation_complete)
         derivation_complete = st.form_submit_button(label="Derivation complete")
         if derivation_complete:
             cards_df.loc[card_idx, "derivation_complete"] = True
-            cards_to_show = cards_df.dropna(subset="worldcat_matches").copy()
-            cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
-            st_utils.update_card_table(cards_to_show, subset, card_table_container)
-            st_utils.push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, s3=s3)
+            st_utils.update_card_table(cards_df, subset, card_table_container)
+            st_utils.push_to_storage(local=LOCAL_DATA, save_file=st.session_state["save_file"], df=cards_df, s3=s3)
             st.success("Derivation complete!", icon="✅")
 
         mark_uncomplete = st.form_submit_button(label="Undo derivation complete")
         if mark_uncomplete:
             cards_df.loc[card_idx, "derivation_complete"] = None
-            cards_to_show = cards_df.dropna(subset="worldcat_matches").copy()
-            cards_to_show.insert(loc=0, column="card_id", value=range(1, len(cards_to_show) + 1))
-            st_utils.update_card_table(cards_to_show, subset, card_table_container)
-            st_utils.push_to_storage(local=LOCAL_DATA, save_file=SAVE_FILE, df=cards_df, s3=s3)
+            st_utils.update_card_table(cards_df, subset, card_table_container)
+            st_utils.push_to_storage(local=LOCAL_DATA, save_file=st.session_state["save_file"], df=cards_df, s3=s3)
             st.success("Derivation cleared!", icon="✅")
