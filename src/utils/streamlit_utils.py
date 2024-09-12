@@ -5,7 +5,6 @@ from typing import Dict, List, Union
 from matplotlib import colormaps
 import numpy as np
 import pandas as pd
-from pandas.io.formats.style import Styler
 import streamlit as st
 from st_aggrid import GridOptionsBuilder, JsCode, AgGrid
 import s3fs
@@ -221,6 +220,54 @@ def filter_on_generic_fields(
     return marc_df.T[df_filter].T
 
 
+def create_filter_columns(record_df: pd.DataFrame, lang_dict: Dict[str, str], search_au: str) -> pd.DataFrame:
+    """
+    Add cols to the dataframe of records (not the MARC df) that allow filtering and searching on certain params
+    Cols params added are:
+    has_title: has a 245 field
+    has_author: has a 100 field
+    cataloguing language: 040$b
+    num_subject_access: # subject access fields (see field IDs below)
+    num_rda: # RDA fields (see field IDs below)
+    num_linked: # 880 fields
+    has_phys_desc: has a 300 field
+    good_encoding_level: 17th char in leader not one of 3, 5, 7
+    record_length: total fields in record
+    publication_date:
+    @param record_df: pd.DataFrame
+    @param lang_dict: Dict[str,str]
+    @param search_au: str
+    @return: pd.DataFrame
+    """
+    # title/author
+    record_df["has_title"] = record_df["record"].apply(lambda x: bool(x.get_fields("245")))
+    record_df["has_author"] = record_df["record"].apply(lambda x: bool(x.get_fields("100", "110", "111", "130")))
+    au_exists = bool(search_au)
+    record_df = record_df.query("has_title == True and (has_author == True or not @au_exists)")
+
+    # lang
+    re_040b = re.compile(r"\$b[a-z]+\$")
+    record_df["language_040$b"] = record_df["record"].apply(
+        lambda x: re_040b.search(x.get_fields("040")[0].__str__()).group())
+    record_df["language"] = record_df["language_040$b"].str[2:-1].map(lang_dict["codes"])
+
+    # subject access/RDA
+    subject_access_fields = ["600", "610", "611", "630", "647", "648", "650", "651", "653", "654", "655", "656", "657",
+                             "658", "662", "688"]
+    rda_fields = ["264", "336", "337", "338", "344", "345", "346", "347"]
+    record_df["num_subject_access"] = record_df["record"].apply(lambda x: len(x.get_fields(*subject_access_fields)))
+    record_df["num_rda"] = record_df["record"].apply(lambda x: len(x.get_fields(*rda_fields)))
+
+    # other
+    record_df["num_linked"] = record_df["record"].apply(lambda x: len(x.get_fields("880")))
+    record_df["has_phys_desc"] = record_df["record"].apply(lambda x: bool(x.get_fields("300")))
+    record_df["good_encoding_level"] = record_df["record"].apply(lambda x: x.leader[17] not in [3, 5, 7])
+    record_df["record_length"] = record_df["record"].apply(lambda x: len(x.get_fields()))
+    record_df["publication_date"] = record_df["record"].apply(lambda x: get_pub_date(x))
+
+    return record_df
+
+
 def gen_gmap(row: pd.Series) -> pd.Series:
     """
     Map a row of values to a row of colours
@@ -345,60 +392,13 @@ def gen_grid_options(df: pd.DataFrame, highlight_common_vals: bool, existing_mat
             cell_style = gen_js(colour_mapping)
             grid_options['columnDefs'][i + 2].update({'cellStyle': cell_style})
 
-    if existing_match and str(existing_match) in df.columns:
-        grid_options['columnDefs'][existing_match + 2].update(
+    if isinstance(existing_match, int) and str(existing_match) in df.columns:
+        col_idx = df.columns.get_loc(str(existing_match))
+        grid_options['columnDefs'][col_idx].update(
             {"cellStyle": {'wordBreak': 'normal', 'whiteSpace': 'pre', "backgroundColor": "#2FD033A0"}}
         )
 
     return grid_options
-
-
-def create_filter_columns(record_df: pd.DataFrame, lang_dict: Dict[str, str], search_au: str) -> pd.DataFrame:
-    """
-    Add cols to the dataframe of records (not the MARC df) that allow filtering and searching on certain params
-    Cols params added are:
-    has_title: has a 245 field
-    has_author: has a 100 field
-    cataloguing language: 040$b
-    num_subject_access: # subject access fields (see field IDs below)
-    num_rda: # RDA fields (see field IDs below)
-    num_linked: # 880 fields
-    has_phys_desc: has a 300 field
-    good_encoding_level: 17th char in leader not one of 3, 5, 7
-    record_length: total fields in record
-    publication_date:
-    @param record_df: pd.DataFrame
-    @param lang_dict: Dict[str,str]
-    @param search_au: str
-    @return: pd.DataFrame
-    """
-    # title/author
-    record_df["has_title"] = record_df["record"].apply(lambda x: bool(x.get_fields("245")))
-    record_df["has_author"] = record_df["record"].apply(lambda x: bool(x.get_fields("100", "110", "111", "130")))
-    au_exists = bool(search_au)
-    record_df = record_df.query("has_title == True and (has_author == True or not @au_exists)")
-
-    # lang
-    re_040b = re.compile(r"\$b[a-z]+\$")
-    record_df["language_040$b"] = record_df["record"].apply(
-        lambda x: re_040b.search(x.get_fields("040")[0].__str__()).group())
-    record_df["language"] = record_df["language_040$b"].str[2:-1].map(lang_dict["codes"])
-
-    # subject access/RDA
-    subject_access_fields = ["600", "610", "611", "630", "647", "648", "650", "651", "653", "654", "655", "656", "657",
-                             "658", "662", "688"]
-    rda_fields = ["264", "336", "337", "338", "344", "345", "346", "347"]
-    record_df["num_subject_access"] = record_df["record"].apply(lambda x: len(x.get_fields(*subject_access_fields)))
-    record_df["num_rda"] = record_df["record"].apply(lambda x: len(x.get_fields(*rda_fields)))
-
-    # other
-    record_df["num_linked"] = record_df["record"].apply(lambda x: len(x.get_fields("880")))
-    record_df["has_phys_desc"] = record_df["record"].apply(lambda x: bool(x.get_fields("300")))
-    record_df["good_encoding_level"] = record_df["record"].apply(lambda x: x.leader[17] not in [3, 5, 7])
-    record_df["record_length"] = record_df["record"].apply(lambda x: len(x.get_fields()))
-    record_df["publication_date"] = record_df["record"].apply(lambda x: get_pub_date(x))
-
-    return record_df
 
 
 def update_marc_table(table, df, highlight_button, existing_match):
@@ -413,6 +413,7 @@ def update_marc_table(table, df, highlight_button, existing_match):
     grid_options = gen_grid_options(
         df=df, highlight_common_vals=highlight_button, existing_match=existing_match
     )
+
     with table:
         ag = AgGrid(
             data=df,
@@ -431,11 +432,15 @@ def update_card_table(df: pd.DataFrame, subset: List[str], container: st.contain
     @param container: st.container
     @return: st.dataframe
     """
-    existing_matches = df.dropna(subset="selected_match_ocn")
+    display_df = df.copy()
+    display_df["selected_match_ocn"] = display_df["selected_match_ocn"].str.strip("ocn"
+                                                                      ).str.strip("ocm"
+                                                                      ).str.strip("on")
+    existing_matches = display_df.dropna(subset="selected_match_ocn")
     oclc_matches = existing_matches.query("selected_match_ocn != 'No match'").index.values
     no_matches = existing_matches.query("selected_match_ocn == 'No match'").index.values
     select_event = container.dataframe(
-        df.loc[:, subset].style.highlight_between(
+        display_df.loc[:, subset].style.highlight_between(
             subset=pd.IndexSlice[oclc_matches, :], color='#d6f5d6'
         ).highlight_between(subset=pd.IndexSlice[no_matches, :], color='#edcd8c'),
         column_config={
@@ -456,8 +461,6 @@ def push_to_storage(local: bool, save_file: str, df: pd.DataFrame, s3: s3fs.S3Fi
     @param local: bool
     @param save_file: str
     @param df: pd.DataFrame
-    @param subset: List[str]
-    @param container: st.container
     @param s3: s3fs.S3FileSystem
     @return: None
     """

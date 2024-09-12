@@ -68,12 +68,13 @@ else:
 
 card_idx = cards_df.query("simple_id == @st.session_state['readable_card_id']").index.values[0]
 st.session_state["card_idx"] = card_idx
-EXISTING_MATCH = cards_df.loc[card_idx, "selected_match"]
-if EXISTING_MATCH == "No match":
-    EXISTING_MATCH = False
-if EXISTING_MATCH:
+
+st.session_state["existing_match"] = cards_df.loc[card_idx, "selected_match"]
+st.session_state["match_exists"] = isinstance(st.session_state["existing_match"], int)
+
+if st.session_state["match_exists"]:
     apparent_oclc_num = cards_df.loc[card_idx, "selected_match_ocn"]
-    actual_oclc_num = cards_df.loc[card_idx, "worldcat_matches"][EXISTING_MATCH].get_fields("001")[0].data
+    actual_oclc_num = cards_df.loc[card_idx, "worldcat_matches"][st.session_state["existing_match"]].get_fields("001")[0].data
     if apparent_oclc_num != actual_oclc_num:
         st.warning(docs.oclc_num_warning)
 
@@ -159,15 +160,11 @@ with st.form("filters"):
         all_marc_fields,
         help="[LoC MARC fields](https://www.loc.gov/marc/bibliographic/)"
     )
-    search_terms = generic_field_contains_col.text_input(
-        "MARC field contains",
-        help=(docs.generic_field_search_help)
-    )
+    search_terms = generic_field_contains_col.text_input("MARC field contains", help=(docs.generic_field_search_help))
 
     search_terms = search_terms.split(";")
     if search_terms == [""]:  # clear if no search terms
-        search_terms = []
-        search_on_marc_fields = []
+        search_terms, search_on_marc_fields = [], []
     include_recs_without_field = include_recs_without_field_col.checkbox("Allow records without specified MARC fields")
 
     if len(search_on_marc_fields) != len(search_terms):
@@ -178,16 +175,11 @@ with st.form("filters"):
         )
 
     # filter option columns defined below to display in the filters users can choose from
-    filter_options = ["num_subject_access", "num_rda", "num_linked", "has_phys_desc", "good_encoding_level",
-                      "record_length"]
+    filter_options = ["num_subject_access", "num_rda", "num_linked", "has_phys_desc", "good_encoding_level", "record_length"]
 
     sort_options_col, highlight_col = st.columns([0.65, 0.2], gap="large", vertical_alignment="center")
-    sort_options = sort_options_col.multiselect(
-        label=("Select how to sort matching records."),
-        options=filter_options,
-        format_func=st_utils.pretty_filter_option,
-        help=(docs.sort_options_help)
-    )
+    sort_options = sort_options_col.multiselect(label=("Select how to sort matching records."), options=filter_options,
+                                                format_func=st_utils.pretty_filter_option, help=(docs.sort_options_help))
 
     highlight_button = highlight_col.checkbox("Highlight common fields", value=True,
                                               help="Highlight field values that are common between two or more records.")
@@ -250,7 +242,7 @@ marc_grid_df.columns = [str(x) for x in marc_grid_df.columns]
 
 # for testing
 st.session_state["marc_grid_df"] = marc_grid_df
-st.session_state["ag"] = st_utils.update_marc_table(marc_table, marc_grid_df, highlight_button, EXISTING_MATCH)
+st.session_state["ag"] = st_utils.update_marc_table(marc_table, marc_grid_df, highlight_button, st.session_state["existing_match"])
 
 select_col, derive_col = st.columns([0.35, 0.35], gap="large")
 with select_col:
@@ -266,12 +258,41 @@ with select_col:
         save_res = save_col.form_submit_button(label="Save selection")
         clear_res = save_col.form_submit_button(label="Clear selection")
 
+        success_empty = st.empty()
+
+        sm_field = "852"
+        info_text = f"""
+                    ➡️ Copy the OCLC Number to search in Record Manager    
+                    ➡️ Copy the shelfmark to field {sm_field}  
+                    ➡️ Copy the OCR text to a 500 field
+                    """
+        copy_instruction = st.empty()
+
+        oclc_label_col, oclc_num_col = st.columns([0.5, 0.5])
+        sm_label_col, sm_col = st.columns([0.5, 0.5])
+        ocr_text_label_col, ocr_text_col = st.columns([0.5, 0.5])
+
+        oclc_label_col.write("OCLC Number:")
+        oclc_num_copy = oclc_num_col.empty()
+
+        sm_label_col.write(f"Shelfmark ({sm_field} field):")
+        sm_col.code(sm)
+
+        ocr_text_label_col.write("OCR text (500 field):")
+        oclc_text_copy = ocr_text_col.empty()
+
+        if st.session_state["match_exists"]:
+            oclc_num = cards_df.loc[card_idx, "selected_match_ocn"]
+            copy_instruction.info(info_text)
+            oclc_num_copy.code(oclc_num.strip('ocn').strip('ocm').strip('on'))
+            oclc_text_copy.code("\n".join(cards_df.loc[card_idx, "lines"]))
+
         if save_res:
             if selected_match == no_correct_text:
                 cards_df.loc[card_idx, ["selected_match", "selected_match_ocn"]] = "No match"
-                st.success("Non-match recorded!", icon="✅")
                 st_utils.update_card_table(cards_df, subset, card_table_container)
                 st_utils.push_to_storage(local=LOCAL_DATA, save_file=st.session_state["save_file"], df=cards_df, s3=s3)
+                success_empty.success("Non-match recorded!", icon="✅")
             else:
                 oclc_num = cards_df.loc[card_idx, "worldcat_matches"][selected_match].get_fields("001")[0].data
                 cards_df.loc[card_idx, "selected_match"] = selected_match
@@ -279,30 +300,25 @@ with select_col:
 
                 st_utils.update_card_table(cards_df, subset, card_table_container)
                 st_utils.push_to_storage(local=LOCAL_DATA, save_file=st.session_state["save_file"], df=cards_df, s3=s3)
-                st_utils.update_marc_table(marc_table, marc_grid_df, highlight_button, EXISTING_MATCH)
-                st.success("Selection saved!", icon="✅")
+                st_utils.update_marc_table(marc_table, marc_grid_df, highlight_button, st.session_state["existing_match"])
 
-                sm_field = "094"
-                info_text = f"""
-                ➡️ Copy the OCLC Number to search in Record Manager    
-                ➡️ Copy the shelfmark to field {sm_field}
-                """
-                st.info(info_text)
-                oclc_label_col, oclc_num_col = st.columns([0.5, 0.5])
-                sm_label_col, sm_col = st.columns([0.5, 0.5])
-                ocr_text_label, ocr_text_col = st.columns([0.5, 0.5])
-                oclc_label_col.write("OCLC Number:")
-                oclc_num_col.code(oclc_num.strip('ocn').strip('ocm').strip('on'))
-                sm_label_col.write("Shelfmark:")
-                sm_col.code(sm)
-                ocr_text_label.write("OCR text for 500 field:")
-                ocr_text_col.code("\n".join(cards_df.loc[card_idx, "lines"]))
+                copy_instruction.info(info_text)
+                oclc_num_copy.code(oclc_num.strip('ocn').strip('ocm').strip('on'))
+                oclc_text_copy.code("\n".join(cards_df.loc[card_idx, "lines"]))
+
+                success_empty.success("Selection saved!", icon="✅")
 
         if clear_res:
             cards_df.loc[card_idx, ["selected_match", "selected_match_ocn", "derivation_complete"]] = None
             st_utils.update_card_table(cards_df, subset, card_table_container)
             st_utils.push_to_storage(local=LOCAL_DATA, save_file=st.session_state["save_file"], df=cards_df, s3=s3)
-            st.success("Selection cleared!", icon="✅")
+            st_utils.update_marc_table(marc_table, marc_grid_df, highlight_button, existing_match=False)
+
+            copy_instruction.write("")
+            oclc_num_copy.code("")
+            oclc_text_copy.code("")
+
+            success_empty.success("Selection cleared!", icon="✅")
 
 with derive_col:
     with st.form("derive_complete"):
