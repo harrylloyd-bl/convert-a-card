@@ -22,10 +22,12 @@ cards_df = pickle.load(open("data\\processed\\chinese_matches.p", "rb"))
 
 
 # parameterised to check first 2 cards succeed - can change to all cards for a complete test
-@pytest.mark.parametrize("card, title", zip([x for x in range(1, 1+1)], cards_df["title"]))
-def test_select_cards(app, card, title):
+@pytest.mark.parametrize("card, title", zip([x for x in range(1, 6 + 1)], cards_df["title"]))
+def test_select_cards(app, card, title, capsys):
     app.session_state["readable_card_id"] = card
     app.run()
+    captured = capsys.readouterr()
+    assert "Uncaught app exception" not in captured.err
     assert app.dataframe[0].value.shape == (195, 7)
     assert app.dataframe[0].value.loc[app.session_state["card_idx"], "title"] == title
 
@@ -89,7 +91,7 @@ def test_pub_year(app):
 
 def test_generic_filter(app):
     app.run()
-    assert len(app.columns) == 18
+    assert len(app.columns) == 24
 
     # setting just filter field shouldn't do anything
     app.columns[8].multiselect[0].set_value(["001"])
@@ -161,12 +163,27 @@ def test_sort_records(app):
 
 def test_marc_highlight(app):
     app.run()
-    assert "backgroundColor" in app.session_state["ag"].grid_options["columnDefs"][2]["cellStyle"]
+    for col in app.session_state["ag"].grid_options["columnDefs"][2:]:
+        assert "backgroundColor" in col["cellStyle"]
 
     app.columns[13].checkbox[0].set_value(False)  # uncheck 'Highlight common fields'
     app.button[0].click()
     app.run()
-    assert "backgroundColor" not in app.session_state["ag"].grid_options["columnDefs"][2]["cellStyle"]
+    if app.session_state["match_exists"]:
+        match = app.session_state["existing_match"]
+        col_idx = app.session_state["marc_grid_df"].columns.get_loc(str(match))
+        assert "backgroundColor" in app.session_state["ag"].grid_options["columnDefs"].pop(col_idx)["cellStyle"]
+        for col in app.session_state["ag"].grid_options["columnDefs"][2:]:
+            assert "backgroundColor" not in col["cellStyle"]
+    else:
+        for col in app.session_state["ag"].grid_options["columnDefs"][2:]:
+            assert "backgroundColor" not in col["cellStyle"]
+
+    # force a test of not highlight
+    app.session_state["readable_card_id"] = len(cards_df)  # last card hasn't been assigned a match
+    app.run()
+    for col in app.session_state["ag"].grid_options["columnDefs"][2:]:
+        assert "backgroundColor" not in col["cellStyle"]
 
 
 @pytest.fixture(scope="module")
@@ -177,24 +194,63 @@ def test_cards():
 def test_save_match(test_cards, app, tmp_path):
     subset = ["simple_id", "title", "author", "selected_match_ocn", "derivation_complete", "shelfmark", "lines"]
     assert test_cards.loc[:, subset].shape == (10, 7)
-    assert test_cards.loc[:, subset]["selected_match_ocn"].dropna().shape == (0,)
+    assert test_cards.loc[:, subset]["selected_match_ocn"].dropna().shape == (5,)
     app.session_state["cards_df"] = test_cards
     app.session_state["save_file"] = tmp_path / "tmp_cards.p"
     app.run()
 
+    assert app.session_state["match_exists"] == True
     assert app.dataframe[0].value.shape == (10, 7)
     assert app.dataframe[0].value.dtypes.equals(test_cards.loc[:, subset].dtypes)
-    assert app.dataframe[0].value["selected_match_ocn"].iloc[0] is None  # sometimes gets cast to str
+    assert app.dataframe[0].value["selected_match_ocn"].iloc[0] == "23921305"  # sometimes gets cast to str
     assert app.dataframe[0].value.dropna().shape == (0, 7)
-
-    app.columns[14].radio[0].set_value(0)
-    app.columns[14].button[0].click()
-    app.run()
-    assert app.dataframe[0].value.iloc[0]["selected_match_ocn"] == "ocm23921305"
-    assert os.path.exists(app.session_state["save_file"])
-    assert pickle.load(open(app.session_state["save_file"], "rb")).iloc[0]["selected_match_ocn"] == "ocm23921305"
 
     app.columns[14].button[1].click()
     app.run()
     assert app.dataframe[0].value.iloc[0]["selected_match_ocn"] is None  # sometimes gets cast to str
     assert pickle.load(open(app.session_state["save_file"], "rb")).iloc[0]["selected_match_ocn"] is None
+
+    app.columns[14].radio[0].set_value(0)
+    app.columns[14].button[0].click()
+    app.run()
+    assert app.dataframe[0].value.iloc[0]["selected_match_ocn"] == "23921305"
+    assert os.path.exists(app.session_state["save_file"])
+    assert pickle.load(open(app.session_state["save_file"], "rb")).iloc[0]["selected_match_ocn"] == "ocm23921305"
+
+    # test non-default card
+    app.session_state["readable_card_id"] = 5
+    app.columns[14].radio[0].set_value(0)
+    app.columns[14].button[0].click()
+    app.run()
+    assert app.dataframe[0].value.iloc[4]["selected_match_ocn"] == "11283982"  # sometimes gets cast to str
+    assert pickle.load(open(app.session_state["save_file"], "rb")).iloc[4]["selected_match_ocn"] == "ocm11283982"
+
+    app.session_state["readable_card_id"] = 5
+    app.columns[14].button[1].click()
+    app.run()
+    assert app.dataframe[0].value.iloc[4]["selected_match_ocn"] is None  # sometimes gets cast to str
+    assert pickle.load(open(app.session_state["save_file"], "rb")).iloc[4]["selected_match_ocn"] is None
+
+
+def test_save_and_clear(test_cards, app, tmp_path):
+    subset = ["simple_id", "title", "author", "selected_match_ocn", "derivation_complete", "shelfmark", "lines"]
+    assert test_cards.loc[:, subset].shape == (10, 7)
+    assert test_cards.loc[:, subset]["selected_match_ocn"].dropna().shape == (5,)
+    app.session_state["cards_df"] = test_cards
+    app.session_state["save_file"] = tmp_path / "tmp_cards.p"
+    app.run()
+    assert app.dataframe[0].value.iloc[0]["selected_match_ocn"] == "23921305"
+
+    app.session_state["readable_card_id"] = 6
+    app.columns[14].radio[0].set_value(0)
+    app.columns[14].button[0].click()
+    app.run()
+
+    assert app.dataframe[0].value.iloc[5]["selected_match_ocn"] == "953743623"
+    app.columns[14].button[1].click()
+    app.run()
+
+    assert app.session_state["readable_card_id"] == 6
+    assert app.dataframe[0].value.iloc[0]["selected_match_ocn"] == "23921305"
+    assert app.dataframe[0].value.iloc[5]["selected_match_ocn"] is None
+    assert pickle.load(open(app.session_state["save_file"], "rb")).iloc[5]["selected_match_ocn"] is None
