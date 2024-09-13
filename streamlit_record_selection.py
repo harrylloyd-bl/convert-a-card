@@ -59,10 +59,8 @@ number_of_cards_container.write(
 
 card_table_instructions.write(docs.card_table_instructions)
 
-if st.session_state["testing"]:  # Can't work out how to set a row select during testing
+if not card_selection["selection"]["rows"]:
     st.session_state["readable_card_id"] = st.session_state.get("readable_card_id", 1)
-elif not card_selection["selection"]["rows"]:
-    st.session_state["readable_card_id"] = 1
 else:
     st.session_state["readable_card_id"] = int(card_selection["selection"]["rows"][0]) + 1
 
